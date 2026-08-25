@@ -29,6 +29,7 @@ from .admin import (
 )
 from . import auth, recorder, telemetry
 from .helpers import *
+from .a11y import *
 
 HELP = """Browser Harness
 
@@ -173,9 +174,12 @@ def _traced(name, fn):
 
 def _install_helper_trace():
     from . import helpers
+    from . import a11y
 
     g = globals()
-    for name in dir(helpers):
+    # a11y helpers are traced alongside the core ones: the verifier reads this
+    # same stream, and an adaptation applied mid-run is part of what happened.
+    for name in [*dir(helpers), *a11y.__all__]:
         if name.startswith("_"):
             continue
         fn = g.get(name)
