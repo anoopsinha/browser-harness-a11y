@@ -13,13 +13,22 @@ import * as aria from './tools/validators/aria-parse.js';
 
 const A = adapters;
 
-// Settings whose adapters need an LLM. They are not wired here: the harness
-// applies them through a11y_fix(), which has a caller. Listed so that asking
-// for one reports "needs-ai" rather than silently doing nothing.
+// Settings whose adapters call into utils/ai.js for something an LLM has to
+// answer. Reported as needs-ai rather than enabled, because an adapter that
+// reports itself on and then does nothing is worse than one that says it cannot
+// run — a blind user pressing Alt+D would get silence with no explanation.
+// Verified against what each adapter actually imports, not against its category.
 const NEEDS_AI = new Set([
   'autoDescribe', 'autoVideoDescribe', 'autoSimplify', 'autoSummarize',
-  'autoWcagFix', 'autoFixLabels', 'autoCaptions', 'fixContrast',
+  'autoFixLabels', 'autoCaptions', 'fixContrast',
+  'describeOnDemand', 'exploreChart',
 ]);
+
+// Repairs applied by handler in response to an auditor finding, not by an
+// enable() toggle. wcag-fixes needs no LLM — it fixes lang attributes, duplicate
+// ids, heading order, tabindex and ARIA validity, which is exactly the structural
+// repair a screen reader depends on. It needs the audit→fix path, not a11y_apply.
+const NEEDS_AUDIT = new Set(['autoWcagFix']);
 
 // VisualAssist is one adapter driven by eight settings, so it is collected
 // rather than dispatched per key.
@@ -48,7 +57,6 @@ const APPLY = {
   announceUpdates: on(A.LiveRegionAnnouncer),
   magnifier: on(A.Magnifier),
   flashGuard: on(A.FlashGuard),
-  describeOnDemand: on(A.DescribeOnDemand),
   reflowColumn: on(A.ReflowColumn),
   focusLocator: on(A.FocusLocator),
   persistentHover: on(A.PersistentHover),
@@ -57,7 +65,6 @@ const APPLY = {
   rememberSpot: on(A.ReadingSpot),
   expandAbbreviations: on(A.AbbreviationExpand),
   languageTag: on(A.LanguageTag),
-  exploreChart: on(A.ExploreAChart),
   spaFocus: on(A.SpaFocus),
   skipLinks: on(A.SkipLinks),
   mathAccessible: on(A.MathA11y),
@@ -103,6 +110,7 @@ function apply(settings = {}) {
     if (key === 'enabled' || ABSORBED.has(key)) continue;
     if (isOff(value)) continue;
     if (NEEDS_AI.has(key)) { skipped.push({ setting: key, reason: 'needs-ai' }); continue; }
+    if (NEEDS_AUDIT.has(key)) { skipped.push({ setting: key, reason: 'needs-audit-pipeline' }); continue; }
 
     const row = APPLY[key];
     if (!row) { skipped.push({ setting: key, reason: 'no-adapter' }); continue; }
