@@ -8,6 +8,7 @@ pixels alone.
 
 The bundle is generated — run `python3 scripts/build_a11y.py` first.
 """
+import hashlib
 import json
 import os
 import time
@@ -123,9 +124,22 @@ def _persist():
     return ident
 
 
+def _build_id(source):
+    """Identity of this bundle build, so a page can tell stale from current."""
+    return hashlib.sha1(source.encode()).hexdigest()[:12]
+
+
 def _guarded(source):
-    """Re-running the bundle on a page that already has it is wasted work."""
-    return "if (!globalThis.__BH_A11Y) {\n" + source + "\n}"
+    """Skip the bundle only when the page already has THIS build of it.
+
+    Guarding on existence alone means a page that loaded an older build never
+    upgrades — the new functions are simply missing, and the failure surfaces far
+    away as "x is not a function".
+    """
+    build = json.dumps(_build_id(source))
+    return (f"if (globalThis.__BH_A11Y_BUILD !== {build}) {{\n"
+            + source
+            + f"\nglobalThis.__BH_A11Y_BUILD = {build};\n}}")
 
 
 def _document_script():
@@ -209,7 +223,7 @@ def _settle(patience=45.0):
 
 
 def _need_attached():
-    if _js("return typeof globalThis.__BH_A11Y") != "object":
+    if _js("return globalThis.__BH_A11Y_BUILD || null") != _build_id(_bundle_source()):
         a11y_attach()
 
 

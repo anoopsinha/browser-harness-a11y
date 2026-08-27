@@ -10,6 +10,7 @@ import * as adapters from './tools/adapters/index.js';
 import * as auditors from './tools/auditors/index.js';
 import * as profiles from './tools/profiles/settings.js';
 import * as aria from './tools/validators/aria-parse.js';
+import { settingsMeta } from './toolkit/registry/tools.js';
 
 const A = adapters;
 
@@ -214,7 +215,118 @@ function audit({ samples = 5 } = {}) {
   return { findings, unavailable, url: location.href };
 }
 
+/** Setting keys this receiver can actually apply.
+ *  The control protocol requires settingKeys to be registry settingsMeta keys —
+ *  that shared vocabulary is the contract — so this is the intersection of the
+ *  dispatcher above with the registry, computed rather than hand-listed so the
+ *  two cannot drift. Keys needing an LLM or the audit pipeline are excluded:
+ *  the Controller must only offer what will actually happen.
+ */
+function supportedKeys() {
+  const mine = new Set([...Object.keys(APPLY), ...VISUAL]);
+  return Object.keys(settingsMeta)
+    .filter((k) => mine.has(k) && !NEEDS_AI.has(k) && !NEEDS_AUDIT.has(k));
+}
+
+/** Current non-default settings, as the control protocol's activeSettings. */
+function activeSettings() {
+  const out = {};
+  const va = A.VisualAssist;
+  if (va?.enabled) {
+    for (const k of VISUAL) {
+      const v = va.settings?.[k];
+      if (v !== undefined && v !== false && v !== 'none' && !(k === 'fontScale' && v === 1)) out[k] = v;
+    }
+  }
+  for (const [key, row] of Object.entries(APPLY)) {
+    const ad = row[0];
+    if (ad && ad.enabled === true) out[key] = true;
+  }
+  return out;
+}
+
+/** Accessible names of things a person could ask to activate. */
+function targets(limit = 40) {
+  const sel = 'a[href], button, [role="button"], [role="link"], input[type="submit"], summary';
+  const seen = new Set();
+  for (const el of document.querySelectorAll(sel)) {
+    const name = (el.getAttribute('aria-label') || el.textContent || el.value || '')
+      .trim().replace(/\s+/g, ' ');
+    if (name && name.length <= 60) seen.add(name);
+    if (seen.size >= limit) break;
+  }
+  return [...seen];
+}
+
+/** Click the element whose accessible name best matches `label`. */
+function activate(label) {
+  const want = String(label || '').trim().toLowerCase();
+  if (!want) return { ok: false, detail: 'no target given' };
+  const sel = 'a[href], button, [role="button"], [role="link"], input[type="submit"], summary';
+  const els = [...document.querySelectorAll(sel)];
+  const nameOf = (el) => (el.getAttribute('aria-label') || el.textContent || el.value || '')
+    .trim().replace(/\s+/g, ' ');
+  let hit = els.find((el) => nameOf(el).toLowerCase() === want)
+         || els.find((el) => nameOf(el).toLowerCase().includes(want));
+  if (!hit) return { ok: false, detail: `no target matching "${label}"` };
+  const name = nameOf(hit);
+  hit.scrollIntoView({ block: 'center' });
+  hit.click();
+  return { ok: true, detail: `activated ${name}` };
+}
+
+/** Readable content: headings for an outline, innerText for the full read. */
+function content(mode = 'outline', chunk = 0, chunkChars = 4000) {
+  const title = (document.title || '').replace(/^\uD83D\uDC34\s*/, '');
+  if (mode === 'outline') {
+    const hs = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
+      .map((h) => h.textContent.trim().replace(/\s+/g, ' '))
+      .filter(Boolean).slice(0, 60);
+    if (!hs.length) return { error: 'no readable content' };
+    return { source: 'untrusted-content', title, outline: hs };
+  }
+  const main = document.querySelector('main, [role="main"], article') || document.body;
+  const text = (main.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
+  if (!text) return { error: 'no readable content' };
+  const totalChunks = Math.max(1, Math.ceil(text.length / chunkChars));
+  const i = Math.min(Math.max(0, chunk | 0), totalChunks - 1);
+  return { source: 'untrusted-content', title,
+           text: text.slice(i * chunkChars, (i + 1) * chunkChars),
+           chunk: i, totalChunks };
+}
+
+/** Restore a {key: previousValue} map. A null/false previous means the setting
+ *  was not in effect, so the adapter is switched off rather than re-applied —
+ *  without this, undo could only ever add. */
+function revert(previous = {}) {
+  const back = {};
+  const off = [];
+  for (const [k, v] of Object.entries(previous)) {
+    if (v === null || v === undefined || v === false) off.push(k); else back[k] = v;
+  }
+  for (const k of off) {
+    if (VISUAL.includes(k)) continue;           // handled by the VisualAssist pass below
+    const ad = APPLY[k]?.[0];
+    if (ad && typeof ad.disable === 'function') { try { ad.disable(); } catch {} }
+  }
+  // Any VISUAL key going back to "unset" means re-running VisualAssist without it.
+  if (off.some((k) => VISUAL.includes(k))) {
+    const keep = {};
+    for (const k of VISUAL) if (back[k] !== undefined) keep[k] = back[k];
+    try { A.VisualAssist.disable(); } catch {}
+    if (Object.keys(keep).length) A.VisualAssist.enable(keep);
+  }
+  if (Object.keys(back).length) apply(back);
+  return { reverted: previous };
+}
+
 globalThis.__BH_A11Y = {
+  supportedKeys,
+  revert,
+  activeSettings,
+  targets,
+  activate,
+  content,
   version: 1,
   adapters: A,
   auditors,

@@ -54,6 +54,8 @@ Commands:
   browser-harness auth status         show Browser Use Cloud auth state
   browser-harness auth logout         remove stored Browser Use Cloud auth
   browser-harness skill               print the browser-harness skill text
+  browser-harness control             serve the Controller protocol on a WebSocket
+  browser-harness control --port 9333 --persist general
   browser-harness recordings          show recording status and recent sessions
   browser-harness recordings --latest   print the newest recording directory
   browser-harness recordings enable   save browser actions locally by default
@@ -124,7 +126,7 @@ def _telemetry_command(args):
         return "reload"
     if first == "--debug-clicks":
         return "debug-clicks"
-    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video"}:
+    if first in {"auth", "skill", "mac-approve", "recordings", "telemetry", "video", "control"}:
         return first
     return "usage"
 
@@ -351,6 +353,13 @@ def _run(args):
         recent = recorder.recordings()
         print(f"latest: {recent[0] if recent else 'none'}")
         return
+    if args and args[0] == "control":
+        # Long-lived: hosts the control-protocol WebSocket the Controller UI
+        # connects out to. Needs a live daemon, same as any other helper call.
+        ensure_daemon()
+        from .a11y import control
+        sys.exit(control.main(args[1:]))
+
     if args and args[0] == "video":
         from . import video
 
