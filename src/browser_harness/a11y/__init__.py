@@ -319,21 +319,54 @@ def a11y_service(method, *args, timeout=15.0):
 
 
 def a11y_sync(url=None):
-    """Fetch this person's effective preferences for the page and apply them.
+    """Fetch this person's effective settings for the page and apply them.
 
-    This is what makes the adaptation the person's rather than a flag: one
-    AbilityModel, held by the service, rendered into whatever page we are on.
+    Two things come out of the profile and both matter. `effectivePreferences`
+    is the authoritative merge of what they have explicitly set or been learned
+    to prefer, scoped by origin and site category. `getAbilityModel` is what
+    they said about themselves at onboarding, rendered for the web. The merge
+    wins wherever it has an opinion; the ability baseline only fills keys it
+    left unset — the same composition the toolkit's own resolveWebPreferences
+    does, run here because that function needs an in-process librarian.
+
+    Reading only the merge (as this did before) meant a person's onboarding
+    never reached the page — a profile that said "I'm blind" applied nothing
+    until they had also changed a setting by hand.
     """
     url = url or page_info()["url"]
-    prefs = a11y_service("effectivePreferences", url)
-    settings = (prefs or {}).get("settings") or {}
+    _need_attached()
+    prefs = a11y_service("effectivePreferences", url) or {}
+    try:
+        model = a11y_service("getAbilityModel")
+    except Exception as e:
+        model = None
+        _log_once(f"ability model unavailable ({e}); using recorded settings only")
+
+    resolved = _js("return globalThis.__BH_A11Y.resolveWeb(%s, %s)"
+                   % (json.dumps(prefs), json.dumps(model)))
+    settings = resolved.get("settings") or {}
+    out = {
+        "url": url,
+        "settings": settings,
+        "provenance": resolved.get("provenance"),
+        # Ability needs the web surface cannot render. Reported rather than
+        # dropped: a need nobody can meet is a finding, not a silence.
+        "unmet": resolved.get("unmet") or [],
+    }
     if not settings:
-        return {"url": url, "settings": {}, "note": "no preferences recorded for this person yet"}
-    result = a11y_apply(**settings)  # a11y_apply sticks it for later pages
-    result["url"] = url
-    result["settings"] = settings
-    result["provenance"] = (prefs or {}).get("provenance")
-    return result
+        out["note"] = "no preferences or needs recorded for this person yet"
+        return out
+    out.update(a11y_apply(**settings))  # a11y_apply sticks it for later pages
+    return out
+
+
+_logged = set()
+
+
+def _log_once(msg):
+    if msg not in _logged:
+        _logged.add(msg)
+        print(f"[a11y] {msg}")
 
 
 def _ax_flags(node):

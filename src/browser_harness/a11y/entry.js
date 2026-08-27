@@ -11,6 +11,8 @@ import * as auditors from './tools/auditors/index.js';
 import * as profiles from './tools/profiles/settings.js';
 import * as aria from './tools/validators/aria-parse.js';
 import { settingsMeta } from './toolkit/registry/tools.js';
+import { deriveWebSettings } from './toolkit/platforms/chrome/web-surface.js';
+import { coerceSetting } from './toolkit/core/units.js';
 
 const A = adapters;
 
@@ -320,8 +322,33 @@ function revert(previous = {}) {
   return { reverted: previous };
 }
 
+/** Compose the authoritative merge with the ability baseline underneath.
+ *
+ *  This mirrors the toolkit's own resolveWebPreferences, which takes an
+ *  in-process librarian we do not have over HTTP: the merge is used verbatim and
+ *  never altered, derived values only FILL keys it did not set, and each is
+ *  coerced to the registry's range. Without this the harness saw only
+ *  effectivePreferences, so what a person said at onboarding never reached the
+ *  page — only settings they had explicitly changed later did.
+ *
+ *  `unmet` is the honest part: ability needs the web surface cannot render.
+ */
+function resolveWeb(prefs = {}, model = null) {
+  const { settings: derived, unmet } = deriveWebSettings(model || {});
+  const settings = { ...(prefs.settings || {}) };
+  const provenance = { ...(prefs.provenance || {}) };
+  for (const [k, v] of Object.entries(derived)) {
+    if (!(k in settings)) {
+      settings[k] = coerceSetting(k, v, settingsMeta);
+      provenance[k] = 'derived:ability';
+    }
+  }
+  return { settings, provenance, unmet, satisfied: unmet.length === 0 };
+}
+
 globalThis.__BH_A11Y = {
   supportedKeys,
+  resolveWeb,
   revert,
   activeSettings,
   targets,
