@@ -95,7 +95,7 @@ def a11y_sticky(enabled=True):
     _sticky_enabled = bool(enabled)
     if not enabled:
         _stick(None)
-    return {"sticky": _sticky_enabled, "warning": "re-applies on navigation; stalls on the second one"}
+    return {"sticky": _sticky_enabled}
 
 
 def _script_registry():
