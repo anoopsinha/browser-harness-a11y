@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import (SERVICE_URL, _build_id, _bundle_source, _guarded, _js,
                a11y_service, a11y_sync)
-from ..helpers import cdp, current_tab, js
+from ..helpers import cdp, current_tab, js, list_tabs
 
 # The agent that executes anything the Controller's grammar could not resolve.
 # browser-harness supplies capability and deliberately holds no model, so the
@@ -87,6 +87,13 @@ class Receiver:
         self._sid = None
         # Set by the connection handler: deliver an unsolicited note.
         self._notify = None
+        # The tab the Controller itself is in, so we can hand focus back when a
+        # task finishes. Only browser-harness can do this — it owns the CDP
+        # connection and it was the thing that moved focus away in the first
+        # place. Resolved lazily: a WebSocket does not say which tab it came
+        # from, so the Controller is found by its own widget in the DOM.
+        self._controller_tab = None
+        self._return_to_controller = True
 
     # ---- helpers ---------------------------------------------------------
 
@@ -139,6 +146,19 @@ class Receiver:
         without a backend would swallow commands into a dead end."""
         base = ["scroll", "activate", "back", "forward", "navigate", "search"]
         return base + (["task"] if self._agent_token() else [])
+
+    def _find_controller_tab(self):
+        """The tab running the Controller widget — not the one we are driving."""
+        for t in list_tabs(include_chrome=False):
+            tid = t.get("targetId")
+            if not tid or tid == self._target:
+                continue
+            try:
+                if js("return !!document.querySelector('.aa-controller')", target_id=tid):
+                    return tid
+            except Exception:
+                continue  # a tab that will not answer is not the Controller
+        return None
 
     def _capabilities(self):
         self._ensure()
@@ -216,7 +236,7 @@ class Receiver:
         return self._eval("return globalThis.__BH_A11Y.content(%s, %d)"
                           % (json.dumps(mode), int(chunk or 0)))
 
-    def performAction(self, actionId, target=None, text=None):
+    def performAction(self, actionId, target=None, text=None, meta=None):
         self._ensure()
         if actionId == "scroll":
             where = (target or "down").lower()
@@ -252,6 +272,10 @@ class Receiver:
             return {"ok": True, "detail": f"searching {engine} for {q}"}
 
         if actionId == "task":
+            # meta.returnToController defaults true (PROTOCOL.md); the person can
+            # turn it off in the Controller when they would rather stay on the
+            # page the task acted on.
+            self._return_to_controller = (meta or {}).get("returnToController", True)
             return self._task(text or target or "")
 
         if actionId in ("back", "forward"):
@@ -261,7 +285,20 @@ class Receiver:
 
 
     def _say(self, text):
-        """Deliver a late result to the person, if the transport can carry it."""
+        """Deliver a late result to the person, if the transport can carry it.
+
+        Focus goes back to the Controller first, so the announcement lands where
+        the person is looking rather than in a tab they have navigated away from.
+        """
+        if self._return_to_controller:
+            if self._controller_tab is None:
+                self._controller_tab = self._find_controller_tab()
+            if self._controller_tab:
+                try:
+                    cdp("Target.activateTarget", targetId=self._controller_tab)
+                    _log("returned focus to the controller tab")
+                except Exception as e:
+                    _log(f"could not return focus: {e}")
         if self._notify:
             try:
                 self._notify(str(text))
