@@ -182,3 +182,61 @@ something to do about it. (That is also where the verifier's `hold` would
 attach.)
 
 `toolkit/controller/web/ui.js`
+
+---
+
+# Catalog
+
+## 7. `page-outline`'s panel is unreadable on any dark-themed site
+
+**Measured contrast: 1.16:1.** WCAG AA needs 4.5:1. The panel is effectively
+blank — white text on a white card. Seen on DuckDuckGo dark mode; it will happen
+on every dark-themed site.
+
+`page-outline.js:35` styles the panel container inline:
+
+```js
+nav.style.cssText = '… background: #fff; color: #111; …';
+```
+
+`color: #111` is right for the container, but it only reaches text that
+**inherits**. The panel's contents are `<a>` elements, and the host page's own
+`a { color: … }` rule beats inheritance — so on a dark site the links keep the
+page's near-white link colour and land on the panel's white background:
+
+```
+panel background : rgb(255, 255, 255)
+panel color      : rgb(17, 17, 17)     ← set, but not what the links use
+link colour      : rgb(238, 238, 238)  ← from DuckDuckGo's stylesheet
+contrast         : 1.16 : 1
+```
+
+This is worth treating as high severity rather than cosmetic: `pageOutline` is
+derived for a **blind** profile (`pageStructure`), so the people most likely to
+have it switched on are the least likely to notice it is broken — and a
+low-vision user, who would notice, gets a panel they cannot read.
+
+**Suggested:** set the colour on the elements that render text, not on an
+ancestor, and use a scoped stylesheet with `!important` so the host page cannot
+win:
+
+```css
+#ai4a11y-page-outline a,
+#ai4a11y-page-outline a:visited,
+#ai4a11y-page-outline a:hover { color: #0b3d91 !important; }
+```
+
+`skip-links` already does the right thing — it sets `color` **and**
+`background` on the anchor itself, and measures 21:1 on the same page. The rule
+that distinguishes them is worth stating in the adapter guidance: **injected UI
+must set its own colours on the elements that paint them, defensively against
+the host stylesheet.** Anything relying on inheritance is one dark-mode site away
+from disappearing.
+
+**Cheap regression test:** the toolkit's own `findLowContrastText` auditor
+already catches this class — during this integration it flagged
+`.ai4a11y-skip-link` and `.ai4a11y-bionic` on Wikipedia. Running the auditors
+over the adapters' *own* injected UI, on a light page and a dark page, would
+catch any future overlay that fails its own standard.
+
+`tools/adapters/page-outline.js`
