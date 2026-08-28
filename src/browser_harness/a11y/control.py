@@ -18,6 +18,7 @@ relayout would stall the socket and the Controller would time out at 10s.
 """
 import asyncio
 import json
+import re
 import os
 import threading
 import time
@@ -43,6 +44,14 @@ AGENT_TOKEN_FILE = os.environ.get(
 # The agent may browse for minutes. The Controller gives up at 10s, so a task is
 # acknowledged immediately and left running rather than held open.
 AGENT_TIMEOUT = float(os.environ.get("BH_AGENT_TIMEOUT", "600"))
+
+ENGINES = {
+    "google": "https://www.google.com/search?q=",
+    "duckduckgo": "https://duckduckgo.com/?q=",
+    "ddg": "https://duckduckgo.com/?q=",
+    "bing": "https://www.bing.com/search?q=",
+    "wikipedia": "https://en.wikipedia.org/w/index.php?search=",
+}
 
 REQ = "aa-control-req"
 RES = "aa-control-res"
@@ -231,9 +240,16 @@ class Receiver:
             q = (target or text or "").strip()
             if not q:
                 return {"ok": False, "detail": "no search terms given"}
-            url = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(q)
+            # "search for apples on google" arrives as the whole phrase, because
+            # the grammar captures everything after "search for". Honour a named
+            # engine rather than searching for its name.
+            engine, m = "google", re.search(r"\s+(?:on|in|with|using)\s+(\w+)\s*$", q, re.I)
+            if m and m.group(1).lower() in ENGINES:
+                engine = m.group(1).lower()
+                q = q[:m.start()].strip()
+            url = ENGINES[engine] + urllib.parse.quote_plus(q)
             self._eval("location.assign(%s); return 1" % json.dumps(url))
-            return {"ok": True, "detail": f"searching for {q}"}
+            return {"ok": True, "detail": f"searching {engine} for {q}"}
 
         if actionId == "task":
             return self._task(text or target or "")
