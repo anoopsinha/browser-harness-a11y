@@ -3,6 +3,18 @@
 Four items, from driving `browser-harness-a11y` through the Controller.
 Verified against `rearch-experiment` @ **b01b2c0**.
 
+> **Update (28 Aug 2026) — all four done** (`cb75b41`).
+> - **#2** `remoteControl().onNote(cb)` surfaces a `{kind:"aa-control-note", text}`
+>   push (no id) instead of dropping it; `web/ui.js` routes it into the
+>   `role=status aria-live` region (and `speak()`, already gated). Documented in
+>   PROTOCOL.md. Your receiver already emits it, so it works end to end now.
+> - **#4** falls out of #2 — no new TTS path; the `presentation.output.speech`
+>   gate keeps a screen-reader operator on the live region (issue #7 intact).
+> - **#3** the task ack now reads the utterance back: `Ok, running: <utterance>`
+>   (trimmed past 80 chars).
+> - **#1** a **Connect to local harness** button fills `ws://127.0.0.1:9333` and
+>   connects; the field still takes a custom host/port.
+
 The receiving end of #2 is already built and pushed on our side, so once the
 Controller learns the message, everything below works with no further change
 here.
@@ -93,3 +105,80 @@ profile takes the other branch. Both are right; they just look contradictory
 when testing.
 
 `toolkit/controller/presentation.js` (no change expected — noting the constraint)
+
+---
+
+# Follow-ups (28 Aug 2026)
+
+Two items that came out of #4. Both start from the same fact: **the toolkit
+cannot detect a screen reader.** `assistiveTech` is inferred from the profile's
+needs, not observed — so the current gate is a guess, and it is wrong in both
+directions.
+
+## 5. Make "speak results" the person's choice, not an inference
+
+`presentation.js` decides TTS from `assistiveTech`, which is really "does this
+person's profile carry screen-reader needs". That is a proxy for "is a screen
+reader running right now", and the two come apart:
+
+- **Blind profile, no screen reader on this surface** (a kiosk, a shared
+  machine, TTS-without-AT, a phone with VoiceOver off) → they get **silence**.
+  That is worse than doubled speech: nothing tells them the agent finished.
+- **Sighted low-vision profile, screen reader running anyway** → two voices.
+
+Neither is recoverable by the person, because nothing is exposed.
+
+**Suggested:** a **Speak results** toggle in the Controller widget.
+- Default **off** when `assistiveTech` is inferred, **on** otherwise — i.e. the
+  current behaviour becomes the default rather than the rule.
+- Persist per operator (it is a stable preference, and a good candidate for a
+  `speakResults` setting on the profile so it follows them across surfaces).
+- Keep it reachable by keyboard and labelled, since the people most affected are
+  the ones who cannot see it.
+
+Why a toggle rather than better detection: there is no reliable screen-reader
+detection API, and every heuristic for it has historically been wrong often
+enough to be an accessibility problem in its own right. Asking is cheaper and
+honest.
+
+**Why not just always speak** (the tempting simplification) — with a screen
+reader running, a second `speechSynthesis` voice:
+- **does not stop when they silence speech.** Ctrl (VoiceOver/NVDA/JAWS) stops
+  the screen reader; it has no relationship to page TTS, which keeps talking
+  after they told it to stop. This is the decisive one — it is a lost control,
+  not noise.
+- ignores their rate. Screen-reader users routinely run 300–500+ WPM; a default
+  `SpeechSynthesisUtterance` is roughly a third of that, so the second voice is
+  still going long after the first finished the same sentence.
+- arrives out of sync — the live region is `polite` and queues; TTS fires
+  immediately, so they hear it twice with a gap.
+- ignores the voice, punctuation verbosity, and language switching they
+  configured once.
+
+`toolkit/controller/presentation.js`, `toolkit/controller/web/ui.js`
+
+## 6. Split the politeness: acknowledgements assertive, results polite
+
+`.aa-feedback` is a single `role="status" aria-live="polite"` region, and
+everything goes through it. `polite` means the announcement **queues behind
+whatever the person is currently reading**.
+
+That is right for a long result — do not interrupt someone mid-sentence to read
+them a headline. It is wrong for the acknowledgement: *"Ok, running: search for
+braille music"* is a confirmation that an agent has just started acting on their
+browser, and it is the only chance to catch a mis-recognition (*"braille
+moozik"*) before it spends a minute on the wrong thing. Queued behind a
+paragraph, it arrives too late to be worth saying.
+
+**Suggested:** two regions rather than one.
+- Acknowledgements and errors → `role="alert"` / `aria-live="assertive"`.
+- Task results and content reads → the existing `polite` region.
+
+Keep both visible in the same place; only the live-region semantics differ.
+
+Worth pairing with a "stop"/"cancel" affordance while a task is running — an
+assertive announcement that something has started is only useful if there is
+something to do about it. (That is also where the verifier's `hold` would
+attach.)
+
+`toolkit/controller/web/ui.js`
