@@ -46,6 +46,11 @@ AGENT_TIMEOUT = float(os.environ.get("BH_AGENT_TIMEOUT", "600"))
 
 REQ = "aa-control-req"
 RES = "aa-control-res"
+# Unsolicited: what the receiver says when something finishes long after the
+# request that started it. The protocol tells a client to ignore any kind it does
+# not recognise, so emitting this is safe against a Controller that has not
+# learned it yet — it simply lights up when one does.
+NOTE = "aa-control-note"
 
 # The Controller times out a request after 10s and shows the person an error, so
 # anything slower than this should fail loudly rather than hang the UI.
@@ -71,6 +76,8 @@ class Receiver:
         # profile at this scope, so a preference stated once outlives the tab.
         self._persist_scope = persist_scope
         self._sid = None
+        # Set by the connection handler: deliver an unsolicited note.
+        self._notify = None
 
     # ---- helpers ---------------------------------------------------------
 
@@ -237,6 +244,15 @@ class Receiver:
         return {"ok": False, "detail": f"unsupported action: {actionId}"}
 
 
+    def _say(self, text):
+        """Deliver a late result to the person, if the transport can carry it."""
+        if self._notify:
+            try:
+                self._notify(str(text))
+            except Exception as e:
+                _log(f"could not deliver: {e}")
+
+
     def _task(self, utterance):
         """Hand an arbitrary instruction to the agent, and return at once.
 
@@ -280,9 +296,12 @@ class Receiver:
             try:
                 with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as r:
                     out = json.loads(r.read())
-                _log(f"task done: {json.dumps(out.get('result'))[:160]}")
+                text = out.get("result") or out.get("error") or "the task finished"
+                _log(f"task done: {json.dumps(text)[:160]}")
+                self._say(text)
             except Exception as e:
                 _log(f"task failed: {e}")
+                self._say(f"That didn't work: {e}")
 
         threading.Thread(target=run, daemon=True).start()
         _log(f"task started: {utterance!r}")
@@ -329,6 +348,22 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
     async def handler(ws):
         _log(f"controller connected from {ws.remote_address}")
         receiver = Receiver(persist_scope=persist_scope, target=target)
+
+        # A task finishes on a worker thread, long after the request that began
+        # it has been answered. Hand the receiver a way back onto the socket, via
+        # the loop, so the person hears the outcome instead of only the promise.
+        loop = asyncio.get_running_loop()
+
+        def notify(text):
+            async def send():
+                try:
+                    await ws.send(json.dumps({"kind": NOTE, "text": text}))
+                    _log(f"note sent: {text[:80]!r}")
+                except Exception as e:
+                    _log(f"note undeliverable ({e}) — controller likely gone")
+            asyncio.run_coroutine_threadsafe(send(), loop)
+
+        receiver._notify = notify
         if sync_on_connect:
             try:
                 r = await asyncio.to_thread(a11y_sync)
