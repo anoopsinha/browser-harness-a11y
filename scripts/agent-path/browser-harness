@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Shim so an external agent (Gemini CLI) runs THIS checkout rather than whatever
+# `browser-harness` happens to be installed. Without it the agent picks up the
+# global CLI — which was two releases behind and had none of the a11y helpers,
+# so a task like "bigger text" could only improvise a CSS zoom.
+#
+# Put this directory first on PATH when starting the agent service:
+#   PATH="<repo>/scripts/agent-path:$PATH" ./run.sh
+#
+# exec by absolute path, not a symlink: the launcher derives its root (and hence
+# its daemon's runtime dir) from dirname "$BASH_SOURCE", so a symlink would send
+# it looking in this directory instead.
+HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+exec "$HERE/../../browser-harness" "$@"

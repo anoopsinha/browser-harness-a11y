@@ -182,3 +182,47 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore domain skills.
 
 When enabled, search `$BH_AGENT_WORKSPACE/domain-skills/<host>/` before inventing an approach. `goto_url(...)` returns up to 10 skill filenames for the navigated host.
+
+## Accessibility adaptation
+
+This checkout carries the AI for Accessibility Toolkit. The page a person is on
+can be adapted to *them*, and read back the way they would read it. Prefer these
+over improvising: setting `zoom` or injecting your own CSS produces something
+that looks right, dies on the next navigation, and never reaches the person's
+profile.
+
+```bash
+browser-harness <<'PY'
+a11y_attach()                 # put the adapter catalog in the page (idempotent)
+a11y_sync()                   # apply THIS person's profile — the usual entry point
+a11y_apply(fontScale=150)     # or set named settings directly
+a11y_profile("dyslexia")      # or apply a preset
+a11y_status()                 # which adapters are live
+a11y_off()                    # turn everything off
+PY
+```
+
+- **"bigger text", "dark mode", "reduce motion"** → `a11y_apply(...)`, using the
+  keys the registry defines (`fontScale`, `lineHeight`, `letterSpacing`,
+  `darkMode`, `contrastMode`, `motionReducer`, `highlightLinks`, `readingRuler`,
+  `bigTargets`, …). Settings applied this way persist across navigation and are
+  visible to the rest of the system; a raw CSS change is not.
+- **Presets**: `blind`, `lowVision`, `colorBlind`, `deaf`, `motor`, `dyslexia`,
+  `adhd`, `cognitive`, `olderAdult`, `anxiety`, `sensory`, `photosensitive`.
+- Settings needing an LLM (`autoDescribe`, `autoFixLabels`) report `needs-ai`
+  rather than pretending. Do not work around that by improvising alt text into
+  the DOM.
+
+### Reading a page as the person does
+
+```bash
+browser-harness <<'PY'
+print(a11y_snapshot())        # the accessibility tree, indented text
+print(a11y_audit())           # missing alt/labels/landmarks, contrast failures
+PY
+```
+
+`a11y_snapshot()` is what a screen reader exposes. **Prefer it to a screenshot
+when deciding what to do.** A control that is not in that tree is one the person
+cannot reach, however visible it looks — planning from pixels succeeds by routes
+they do not have, and reports success.
