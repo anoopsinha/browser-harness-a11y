@@ -68,6 +68,7 @@ const APPLY = {
   rememberSpot: on(A.ReadingSpot),
   expandAbbreviations: on(A.AbbreviationExpand),
   languageTag: on(A.LanguageTag),
+  fixLandmarks: on(A.FixLandmarks),
   spaFocus: on(A.SpaFocus),
   skipLinks: on(A.SkipLinks),
   mathAccessible: on(A.MathA11y),
