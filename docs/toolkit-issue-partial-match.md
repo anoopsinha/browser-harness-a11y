@@ -1,109 +1,113 @@
-# Grammar matches part of an utterance and silently executes it
+# Settings commands now route to the agent and lose the adaptation
 
-Against `rearch-experiment` @ **e2b7b25**.
+Against `rearch-experiment` @ **83bba63**. Supersedes the earlier partial-match
+write-up: `rawToTask` has shipped and fixed that symptom. This is what it cost.
 
-An alternative to "when a remote receiver is connected, bypass the grammar and
-send everything as a task". That change fixes the symptom below, but it also
-routes the settings vocabulary to an agent — see **What bypassing costs** at the
-end. This is the narrower fix.
+## What changed
 
-## The bug
+`rawToTask` is now unconditional when the Controller drives a URL — no local
+grammar, every utterance goes to the receiver as a `task`. That correctly fixes
+compound instructions: *"open google and search for apples"* now reaches the
+agent whole, instead of being partially executed as a search for "apples".
 
-The grammar's rules are unanchored, so a rule can match a *fragment* of a longer
-utterance and win. The rest of the sentence is discarded without a word to the
-person.
-
-Reproduced against the live grammar, with a receiver declaring
-`['scroll','activate','back','forward','navigate','search','task']`:
+Verified end to end against `browser-harness-a11y`:
 
 ```
-"open google and search for apples"     -> search,   target "apples"
-"go to news.ycombinator.com and tell
- me the title of the top story"         -> navigate, target "news.ycombinator.com"
-"find me some apples"                   -> null  (correctly falls through to task)
+"open google and search for apples"
+  → performAction("task", null, "open google and search for apples")
+  → note: "I have searched for \"apples\" on Google in the specified tab."
+  → tab:  google.com/search?q=apples          ✅
 ```
 
-Both of the first two are single instructions with two clauses. In each case the
-grammar executed one clause and dropped the other. The person is told
-*"Searching for apples"* / *"Opening news.ycombinator.com"* — which is true, and
-is also not what they asked for.
+## The problem
 
-This is worse than a plain no-match, because a no-match is visible: the
-Controller says it didn't understand and the person rephrases. A partial match
-looks like success, so the person believes the whole instruction was taken.
+The settings vocabulary goes the same way, and the adaptation is lost.
 
-For a blind user it is worse still: the visible page changed in a way that
-half-satisfies the request, and the only signal is a confirmation that sounds
-correct.
+`"bigger text"` now reaches the agent. It answers *"The text size has been
+increased"*, which sounds right. Measured on the page afterwards:
+
+```
+adapters live                    : FixLandmarks, KeyboardNavigator,
+                                   LiveRegionAnnouncer, PageOutline,
+                                   SkipLinks, SpaFocus     ← VisualAssist absent
+ai4a11y-visual-assist stylesheet : false
+body zoom                        : 1.2                     ← the agent's own CSS
+```
+
+The agent set `zoom: 1.2` on the body instead of applying the toolkit adapter.
+The outcome looks correct and the mechanism is detached from the person:
+
+- **It does not survive navigation.** No adapter is enabled, so the sticky
+  re-apply has nothing to re-apply. Next page load, it is gone.
+- **It is not in `activeSettings`.** The next relative request ("bigger still")
+  reads a context that does not know text was ever enlarged.
+- **`undoLast` cannot revert it.** There is no journal entry — the change never
+  went through `applySettings`.
+- **It is never recorded to the profile.** A preference the person stated aloud
+  does not become theirs; it dies with the tab.
+- **It costs ~30–60s and a model call** for something that was instant and free.
+
+This matters more than the latency: these are the *accessibility* commands. A
+blind or low-vision person asking for bigger text, dark mode, or reduced motion
+is the Controller's core case, and it is now the path that degrades — silently,
+because the confirmation sounds like success.
 
 ## Suggested fix
 
-**Only accept a grammar match when it accounts for substantially all of the
-utterance.** Otherwise fall through to `task` (or to no-match where no `task`
-action is declared).
-
-Roughly, in `parse()`:
+Under `rawToTask`, still short-circuit an utterance that maps cleanly onto the
+**receiver's own declared `settingKeys`**, and send everything else as a task.
 
 ```js
-const m = rule.re.exec(utterance);
-if (!m) continue;
-// A rule that consumed only part of the utterance has probably caught a clause
-// of a longer instruction. Leaving the remainder unexecuted is worse than not
-// matching, because the confirmation sounds like success.
-const consumed = m[0].length / utterance.trim().length;
-if (consumed < THRESHOLD) continue;   // → task
+if (rawToTask) {
+  const det = parse(utterance);
+  // Keep only fully-consuming adapt/undo/query matches — the deterministic
+  // vocabulary the receiver declared. Anything partial or unrecognised is a
+  // task, so compound instructions stay fixed.
+  if (det && consumesWholeUtterance(det, utterance)
+          && (det.type === 'adapt' || det.type === 'undo' || det.type === 'query')) {
+    return det;
+  }
+  return taskCommand(utterance);
+}
 ```
 
-Notes on shaping it:
+`consumesWholeUtterance` is the guard from the original write-up, and it is what
+keeps this from reintroducing the bug `rawToTask` fixed:
 
-- **A ratio is the crude version.** A cleaner rule is "the match must start at
-  the beginning (allowing a leading politeness) and reach the end". "please
-  scroll down" should still match; "scroll down and read me the third result"
-  should not.
-- **Conjunctions are the reliable tell.** An unmatched `\b(and|then|,)\b` in the
-  remainder is strong evidence of a second clause.
-- **Keep short commands exact.** "bigger text", "dark mode", "undo",
-  "scroll down" consume the whole utterance and must stay on the deterministic
-  path — they are the ones that need to be instant and free.
+- **"bigger text", "dark mode", "undo", "read this to me"** consume the whole
+  utterance → deterministic, instant, free, and they go through `applySettings`
+  so they persist, appear in `activeSettings`, and can be undone.
+- **"open google and search for apples"** does not → task, unchanged from today.
 
-## Why this shape rather than bypassing the grammar
+A ratio of matched length to utterance length is the crude form; "starts at the
+beginning (allowing a leading politeness) and reaches the end" is cleaner. An
+unmatched `\b(and|then|,)\b` in the remainder is a reliable tell for a second
+clause.
 
-The bug is not that a grammar exists; it is that a rule can win on a fragment.
-Fixing the eagerness keeps two properties that a blanket bypass loses:
+Note the `command` type is deliberately excluded above — `scroll`, `navigate`,
+`search`, `activate` are all things an agent can do at least as well, and
+routing them through the agent is what makes compound phrasing work. It is only
+`adapt` / `undo` / `query` that have no agent equivalent, because they go
+through the ControlPort into the adapter catalog and the person's profile.
 
-**1. The settings vocabulary stays instant, free, and deterministic.**
+## Why this cannot be fixed in the consuming app
 
-| utterance | with the guard | with a blanket bypass |
-|---|---|---|
-| "bigger text" | `applySettings {fontScale:110}` — immediate | task → agent, 30–120s, a model call |
-| "dark mode" | `applySettings {darkMode:true}` | task → agent |
-| "undo" | `undoLast` | task → agent; `undoLast` unreachable |
-| "read this to me" | `getContent` | task → agent |
-| "open google and search for apples" | **task** ✅ | task ✅ |
+The obvious workaround on our side is to teach the agent the adapter helpers —
+append `a11y_*` documentation to the agent's context so `"bigger text"` calls
+`a11y_apply(fontScale=…)` rather than improvising a zoom.
 
-**2. The receiver's declared `settingKeys` keep meaning something.**
-PROTOCOL.md calls that shared vocabulary "the contract"; a bypass makes it
-decorative.
+That is worth doing anyway, but it does not solve this:
 
-## What bypassing costs, concretely
+- Every consuming app would have to do it independently, and get it right.
+- It still costs a model call and ~30–60s for a command that has a deterministic
+  answer.
+- It is probabilistic. The agent might apply the adapter, or might zoom again —
+  and when it improvises, the failure is invisible, because the page did get
+  bigger.
 
-Checked in `browser-harness-a11y`: the agent's `GEMINI.md` is 138 lines of the
-browser-harness skill and contains **zero** mentions of `a11y_*`. The agent has
-never heard of the adapter catalog, `a11y_apply`, or the person's ability
-profile.
+The receiver already tells the Controller exactly which keys it can apply, in
+the registry's shared vocabulary. That declaration is the contract PROTOCOL.md
+describes; using it for these four intents is cheaper and more reliable than
+asking a model to rediscover it each time.
 
-So under a blanket bypass, "dark mode" reaches an agent that cannot perform it.
-It would drive the browser instead — toggling a site's own theme, or nothing —
-while the toolkit adaptation, which is the Controller's reason to exist, is
-never applied.
-
-If the bypass is preferred anyway, two things need to follow or the
-accessibility commands are simply lost:
-
-1. The consuming app must teach its agent the adaptation helpers (for us, adding
-   `a11y_*` documentation to `GEMINI.md`).
-2. Something must keep a fast path for the receiver's declared `settingKeys`, so
-   the commands a blind user needs most do not each cost a minute and a model
-   call.
-
-`toolkit/controller/grammar.js` (`parse`), `toolkit/controller/router.js`
+`toolkit/controller/router.js`, `toolkit/controller/grammar.js` (`parse`)
