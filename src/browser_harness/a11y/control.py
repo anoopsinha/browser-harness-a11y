@@ -29,7 +29,7 @@ from pathlib import Path
 
 from . import (SERVICE_URL, _build_id, _bundle_source, _guarded, _js,
                a11y_service, a11y_sync)
-from ..helpers import cdp, current_tab, js, list_tabs
+from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
 # The agent that executes anything the Controller's grammar could not resolve.
 # browser-harness supplies capability and deliberately holds no model, so the
@@ -112,15 +112,60 @@ class Receiver:
                             targetId=self._target, flatten=True)["sessionId"]
         return self._sid
 
+    def _reacquire(self):
+        """The driven tab is gone. Adopt another — never the Controller's own.
+
+        A person closing the tab an agent was working in is ordinary, and until
+        this the receiver stayed pinned to the dead target and failed every
+        call forever with "No target with given id found".
+        """
+        self._sid = None
+        # Prefer wherever the harness already is — that is the page the person
+        # is most likely looking at — before falling back to any other tab.
+        try:
+            cur = current_tab()
+            tid = cur.get("targetId")
+            if tid and tid != self._controller_tab and "/controller" not in (cur.get("url") or ""):
+                self._target = tid
+                _log(f"driven tab closed; now driving {(cur.get('title') or '')[:40]!r}")
+                return True
+        except Exception:
+            pass
+        for t in list_tabs(include_chrome=False):
+            tid = t.get("targetId")
+            if not tid or tid == self._controller_tab:
+                continue
+            if "/controller" in (t.get("url") or ""):
+                continue
+            self._target = tid
+            _log(f"driven tab closed; now driving {(t.get('title') or '')[:40]!r}")
+            return True
+        # Nothing left to drive: open a tab rather than fail every later call.
+        try:
+            self._target = new_tab("about:blank")["targetId"]
+            _log("driven tab closed; opened a fresh one")
+            return True
+        except Exception as e:
+            _log(f"driven tab closed and could not open another: {e}")
+            self._target = None
+            return False
+
     def _eval(self, expression, tries=3):
         """Evaluate in the driven tab, waiting out a renderer mid-relayout."""
+        reacquired = False
         for attempt in range(tries):
             try:
                 if self._target:
                     return js(expression, target_id=self._target)
                 return _js(expression)
-            except RuntimeError as e:
-                if "timed out" in str(e) and attempt < tries - 1:
+            except Exception as e:
+                msg = str(e)
+                if "No target with given id" in msg and not reacquired:
+                    reacquired = True
+                    if self._reacquire():
+                        continue
+                    raise RuntimeError("the tab being driven was closed") from None
+                if "timed out" in msg and attempt < tries - 1:
                     time.sleep(1.0)
                     continue
                 raise
