@@ -19,11 +19,30 @@ relayout would stall the socket and the Controller would time out at 10s.
 import asyncio
 import json
 import os
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
 
 from . import (SERVICE_URL, _build_id, _bundle_source, _guarded, _js,
                a11y_service, a11y_sync)
 from ..helpers import cdp, current_tab, js
+
+# The agent that executes anything the Controller's grammar could not resolve.
+# browser-harness supplies capability and deliberately holds no model, so the
+# deciding is done by an external agent — here the Gemini CLI service in the
+# sibling browser-harness checkout, which drives this same browser through the
+# harness skill. Unset AGENT_URL to leave `task` undeclared.
+AGENT_URL = os.environ.get("BH_AGENT_URL", "http://127.0.0.1:8787/run")
+AGENT_TOKEN_FILE = os.environ.get(
+    "BH_AGENT_TOKEN_FILE",
+    str(Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/projects"
+                      "/browser-harness/extension-service/.token"))
+# The agent may browse for minutes. The Controller gives up at 10s, so a task is
+# acknowledged immediately and left running rather than held open.
+AGENT_TIMEOUT = float(os.environ.get("BH_AGENT_TIMEOUT", "600"))
 
 REQ = "aa-control-req"
 RES = "aa-control-res"
@@ -92,12 +111,25 @@ class Receiver:
         cdp("Runtime.evaluate", session_id=sid, expression=source)
         _log(f"injected catalog into the driven tab ({len(source)} bytes)")
 
+    def _agent_token(self):
+        try:
+            return Path(AGENT_TOKEN_FILE).read_text().strip()
+        except OSError:
+            return None
+
+    def _actions(self):
+        """What we can do. `task` is only offered when an agent is reachable —
+        the Controller routes every unparsed utterance to it, so declaring it
+        without a backend would swallow commands into a dead end."""
+        base = ["scroll", "activate", "back", "forward", "navigate", "search"]
+        return base + (["task"] if self._agent_token() else [])
+
     def _capabilities(self):
         self._ensure()
         return {
             "platform": "browser-harness",
             "settingKeys": self._eval("return globalThis.__BH_A11Y.supportedKeys()"),
-            "actions": ["scroll", "activate", "back", "forward"],
+            "actions": self._actions(),
             "canReadContent": True,
             "targets": self._eval("return globalThis.__BH_A11Y.targets(40)"),
         }
@@ -179,10 +211,82 @@ class Receiver:
             return {"ok": True, "detail": f"scrolled {where}"}
         if actionId == "activate":
             return self._eval("return globalThis.__BH_A11Y.activate(%s)" % json.dumps(target or ""))
+        if actionId == "navigate":
+            url = (target or text or "").strip()
+            if not url:
+                return {"ok": False, "detail": "no address given"}
+            if not url.startswith(("http://", "https://")):
+                url = "https://" + url
+            self._eval("location.assign(%s); return 1" % json.dumps(url))
+            return {"ok": True, "detail": f"opening {url}"}
+
+        if actionId == "search":
+            q = (target or text or "").strip()
+            if not q:
+                return {"ok": False, "detail": "no search terms given"}
+            url = "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(q)
+            self._eval("location.assign(%s); return 1" % json.dumps(url))
+            return {"ok": True, "detail": f"searching for {q}"}
+
+        if actionId == "task":
+            return self._task(text or target or "")
+
         if actionId in ("back", "forward"):
             self._eval(f"history.{actionId}(); return 1")
             return {"ok": True, "detail": f"went {actionId}"}
         return {"ok": False, "detail": f"unsupported action: {actionId}"}
+
+
+    def _task(self, utterance):
+        """Hand an arbitrary instruction to the agent, and return at once.
+
+        A real task takes far longer than the Controller's 10s timeout, so the
+        person gets an immediate acknowledgement and the work continues in the
+        background. Holding the socket open would guarantee a timeout and tell
+        them it failed while it was still working.
+        """
+        utterance = (utterance or "").strip()
+        if not utterance:
+            return {"ok": False, "detail": "nothing to do"}
+        token = self._agent_token()
+        if not token:
+            return {"ok": False, "detail": "no agent configured"}
+
+        # Name the tab explicitly. "active" means whatever has focus, and the
+        # Controller runs in a tab of its own — so an agent following focus reads
+        # the Controller instead of the page the person is on, and answers
+        # confidently about the wrong document.
+        where = ""
+        if self._target:
+            try:
+                url = self._eval("return location.href")
+                where = (f"The working tab is browser-harness targetId {self._target} "
+                         f"(currently {url}). Call switch_tab('{self._target}') before "
+                         f"anything else, and act only on that tab — never on the "
+                         f"controller UI at :4000 or any other tab. ")
+            except Exception:
+                pass
+
+        def run():
+            body = json.dumps({
+                "prompt": where + utterance,
+                # Act on the page the person is already reading, do not open tabs.
+                "tab_policy": "active",
+            }).encode()
+            req = urllib.request.Request(
+                AGENT_URL, data=body, method="POST",
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as r:
+                    out = json.loads(r.read())
+                _log(f"task done: {json.dumps(out.get('result'))[:160]}")
+            except Exception as e:
+                _log(f"task failed: {e}")
+
+        threading.Thread(target=run, daemon=True).start()
+        _log(f"task started: {utterance!r}")
+        return {"ok": True, "detail": f"working on: {utterance}"}
 
 
 METHODS = ("describeCapabilities", "getContext", "applySettings", "undoLast",
