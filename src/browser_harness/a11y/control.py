@@ -66,6 +66,26 @@ NOTE = "aa-control-note"
 CALL_TIMEOUT = 9.0
 
 
+def _target_id_of(tab):
+    """new_tab() returns a target id; other helpers hand back a dict."""
+    return tab.get("targetId") if isinstance(tab, dict) else tab
+
+
+def is_controller_tab(tid):
+    """True when this tab is running the Controller widget.
+
+    Checked by looking for the mounted widget, not by URL: the Controller is
+    served from both localhost:4000 and 127.0.0.1:4000, and a host may mount it
+    on any page. Driving it would have the agent act on the control surface
+    instead of the content — and navigate away the very page the person is
+    typing into.
+    """
+    try:
+        return bool(js("return !!document.querySelector('.aa-controller')", target_id=tid))
+    except Exception:
+        return False  # a tab that will not answer is not the Controller
+
+
 def _log(msg):
     print(f"[control] {msg}", flush=True)
 
@@ -125,7 +145,7 @@ class Receiver:
         try:
             cur = current_tab()
             tid = cur.get("targetId")
-            if tid and tid != self._controller_tab and "/controller" not in (cur.get("url") or ""):
+            if tid and tid != self._controller_tab and not is_controller_tab(tid):
                 self._target = tid
                 _log(f"driven tab closed; now driving {(cur.get('title') or '')[:40]!r}")
                 return True
@@ -133,16 +153,14 @@ class Receiver:
             pass
         for t in list_tabs(include_chrome=False):
             tid = t.get("targetId")
-            if not tid or tid == self._controller_tab:
-                continue
-            if "/controller" in (t.get("url") or ""):
+            if not tid or tid == self._controller_tab or is_controller_tab(tid):
                 continue
             self._target = tid
             _log(f"driven tab closed; now driving {(t.get('title') or '')[:40]!r}")
             return True
         # Nothing left to drive: open a tab rather than fail every later call.
         try:
-            self._target = new_tab("about:blank")["targetId"]
+            self._target = _target_id_of(new_tab("about:blank"))
             _log("driven tab closed; opened a fresh one")
             return True
         except Exception as e:
@@ -198,11 +216,8 @@ class Receiver:
             tid = t.get("targetId")
             if not tid or tid == self._target:
                 continue
-            try:
-                if js("return !!document.querySelector('.aa-controller')", target_id=tid):
-                    return tid
-            except Exception:
-                continue  # a tab that will not answer is not the Controller
+            if is_controller_tab(tid):
+                return tid
         return None
 
     def _capabilities(self):
@@ -374,18 +389,26 @@ class Receiver:
         if self._target:
             try:
                 url = self._eval("return location.href")
-                where = (f"The working tab is browser-harness targetId {self._target} "
-                         f"(currently {url}). Call switch_tab('{self._target}') before "
-                         f"anything else, and act only on that tab — never on the "
-                         f"controller UI at :4000 or any other tab. ")
+                where = (
+                    f"WORKING TAB: browser-harness targetId {self._target} "
+                    f"(currently {url}). Call switch_tab('{self._target}') before "
+                    f"anything else and do all work there. "
+                    f"Never act on a tab running the accessibility Controller — "
+                    f"it is the control surface the person is typing into, and "
+                    f"navigating it away ends the session. If the working tab is "
+                    f"gone, open a NEW tab with new_tab(); never take over an "
+                    f"existing one you did not open. ")
             except Exception:
                 pass
 
         def run():
             body = json.dumps({
                 "prompt": where + utterance,
-                # Act on the page the person is already reading, do not open tabs.
-                "tab_policy": "active",
+                # Deliberately NO tab_policy. The service's "active" policy says
+                # to operate on "the page they are viewing right now" — and after
+                # returnToController that is the Controller itself, so the agent
+                # was being told to act on the control surface. The WORKING TAB
+                # line above is the only tab instruction, and it is explicit.
             }).encode()
             req = urllib.request.Request(
                 AGENT_URL, data=body, method="POST",
@@ -504,7 +527,13 @@ def main(argv):
         try:
             tab = current_tab()
             target = tab["targetId"]
-            _log(f"driving tab: {tab.get('title', '')[:50]!r}")
+            if is_controller_tab(target):
+                # Starting the receiver while the Controller has focus must not
+                # make the Controller the thing we drive.
+                target = _target_id_of(new_tab("about:blank"))
+                _log("current tab is the Controller; opened a fresh tab to drive")
+            else:
+                _log(f"driving tab: {tab.get('title', '')[:50]!r}")
         except Exception as e:
             _log(f"no tab to pin ({e}); will follow the current tab")
     try:
