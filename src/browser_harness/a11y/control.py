@@ -29,6 +29,7 @@ from pathlib import Path
 
 from . import (SERVICE_URL, _build_id, _bundle_source, _guarded, _js,
                a11y_service, a11y_sync)
+from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
 # The agent that executes anything the Controller's grammar could not resolve.
@@ -174,7 +175,7 @@ class Receiver:
             self._target = None
             return False
 
-    def _eval(self, expression, tries=3):
+    def _eval(self, expression, tries=4):
         """Evaluate in the driven tab, waiting out a renderer mid-relayout."""
         reacquired = False
         for attempt in range(tries):
@@ -189,9 +190,24 @@ class Receiver:
                 # prompt. It reconnects on the next call, so retry once rather
                 # than surfacing a raw websocket error the person cannot act on.
                 if _lost_browser(msg) and attempt < tries - 1:
-                    _log("lost the connection to Chrome; retrying")
+                    # The daemon can be alive holding a dead socket to Chrome,
+                    # and it does not reconnect on its own. A fresh CLI call
+                    # would heal it — ensure_daemon() checks and respawns at
+                    # process start — but this process is long-lived and ran
+                    # that once, at startup. So do here what a new invocation
+                    # would: stop the daemon and let the next call respawn it.
                     self._sid = None
-                    time.sleep(1.0)
+                    if attempt == 0:
+                        _log("lost the connection to Chrome; retrying")
+                        time.sleep(1.0)
+                    else:
+                        _log("still lost; restarting the harness daemon")
+                        try:
+                            restart_daemon()
+                            ensure_daemon()
+                        except Exception as e:
+                            _log(f"could not restart the daemon: {e}")
+                        time.sleep(1.0)
                     continue
                 if "No target with given id" in msg and not reacquired:
                     reacquired = True
@@ -473,8 +489,9 @@ async def _handle(ws, receiver):
                 reply["error"] = f"{method} timed out after {CALL_TIMEOUT}s"
             except Exception as e:
                 reply["error"] = (
-                    "lost the connection to Chrome — check for an "
-                    "\u201cAllow remote debugging\u201d prompt in the browser"
+                    "lost the connection to Chrome and could not recover — "
+                    "say it again, or check for an \u201cAllow remote "
+                    "debugging\u201d prompt in the browser"
                     if _lost_browser(str(e)) else str(e))
         _log(f"{method}({json.dumps(args)[:60]}) -> "
              f"{json.dumps(reply.get('result', reply.get('error')))[:90]}")
