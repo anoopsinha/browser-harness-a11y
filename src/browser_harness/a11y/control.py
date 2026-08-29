@@ -86,6 +86,12 @@ def is_controller_tab(tid):
         return False  # a tab that will not answer is not the Controller
 
 
+def _lost_browser(msg):
+    """The daemon's CDP link to Chrome went away, as opposed to a page error."""
+    return ("no close frame" in msg or "ConnectionClosed" in msg
+            or "not connected" in msg or "connection is closed" in msg.lower())
+
+
 def _log(msg):
     print(f"[control] {msg}", flush=True)
 
@@ -178,6 +184,15 @@ class Receiver:
                 return _js(expression)
             except Exception as e:
                 msg = str(e)
+                # The daemon's own CDP socket to Chrome can drop — Chrome
+                # restarting, or the per-connection "Allow remote debugging"
+                # prompt. It reconnects on the next call, so retry once rather
+                # than surfacing a raw websocket error the person cannot act on.
+                if _lost_browser(msg) and attempt < tries - 1:
+                    _log("lost the connection to Chrome; retrying")
+                    self._sid = None
+                    time.sleep(1.0)
+                    continue
                 if "No target with given id" in msg and not reacquired:
                     reacquired = True
                     if self._reacquire():
@@ -457,7 +472,10 @@ async def _handle(ws, receiver):
                 # can show, a silence is one it can only wait out.
                 reply["error"] = f"{method} timed out after {CALL_TIMEOUT}s"
             except Exception as e:
-                reply["error"] = str(e)
+                reply["error"] = (
+                    "lost the connection to Chrome — check for an "
+                    "\u201cAllow remote debugging\u201d prompt in the browser"
+                    if _lost_browser(str(e)) else str(e))
         _log(f"{method}({json.dumps(args)[:60]}) -> "
              f"{json.dumps(reply.get('result', reply.get('error')))[:90]}")
         await ws.send(json.dumps(reply))
