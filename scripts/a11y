@@ -16,6 +16,23 @@ AGENT="${AA_AGENT_DIR:-$A11Y/../browser-harness/extension-service}"
 CONTROLLER_URL="${AA_CONTROLLER_URL:-http://127.0.0.1:4000/controller}"
 LOGS="${AA_LOG_DIR:-/tmp}"
 
+# A dedicated automation Chrome, launched with the debugging port rather than
+# toggled on afterwards. This is what avoids the M144 "Allow remote debugging?"
+# prompt and the M136 default-profile lockdown — the prompt that has been the
+# single largest source of mystery failures. --guest keeps it signed out, so a
+# participant logs into whatever they need themselves and nothing of the
+# operator's is in the profile.
+#
+# NOT --guest: guest mode refuses Target.createTarget outright ("Failed to open
+# a new tab"), so no tab can be opened over CDP and the harness cannot work at
+# all. A dedicated profile directory gives the same isolation — it starts signed
+# out, so the person logs into whatever they need — and unlike guest it keeps
+# that login for the rest of the session instead of discarding it on close.
+CHROME_PORT="${AA_CHROME_PORT:-9222}"
+CHROME_DIR="${AA_CHROME_PROFILE:-$HOME/.a11y-chrome}"
+CHROME_BIN="${AA_CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
+export BU_CDP_URL="http://127.0.0.1:$CHROME_PORT"
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 info() { printf '    %s\n' "$1"; }
@@ -64,35 +81,59 @@ preflight() {
   local which_bh; which_bh="$(command -v browser-harness || true)"
   if [ -z "$which_bh" ]; then
     bad "no browser-harness on PATH"; info "ln -sfn $A11Y/scripts/agent-path/browser-harness ~/.local/bin/browser-harness"; fail=1
-  elif bounded 20 browser-harness <<<'import sys; sys.exit(0 if "a11y_apply" in dir() else 1)' >/dev/null 2>&1; then
-    ok "browser-harness on PATH has the a11y helpers"
   else
-    bad "browser-harness on PATH is not this checkout ($which_bh)"
-    info "ln -sfn $A11Y/scripts/agent-path/browser-harness ~/.local/bin/browser-harness"; fail=1
+    # Resolve the symlink and compare paths. Running a script to introspect the
+    # helpers would start a daemon and need Chrome, which conflates "is this the
+    # right binary" with "is the browser reachable" — and false-failed when it
+    # was only the browser that was down.
+    local resolved
+    resolved="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$which_bh" 2>/dev/null)"
+    if [ "$resolved" = "$A11Y/scripts/agent-path/browser-harness" ]; then
+      ok "browser-harness on PATH is this checkout"
+    else
+      bad "browser-harness on PATH is not this checkout"
+      info "it resolves to: ${resolved:-$which_bh}"
+      info "ln -sfn $A11Y/scripts/agent-path/browser-harness ~/.local/bin/browser-harness"; fail=1
+    fi
   fi
   return $fail
 }
 
 # ── chrome ──────────────────────────────────────────────────────────────────
-check_chrome() {
-  if ! pgrep -f "Google Chrome" >/dev/null 2>&1; then
-    bad "Chrome is not running"; info "start Chrome, then re-run"; return 1
-  fi
-  # The permission prompt is the single most common cause of "That didn't work".
+chrome_endpoint_up() { curl -s -m 2 "$BU_CDP_URL/json/version" >/dev/null 2>&1; }
+
+start_chrome() {
+  if chrome_endpoint_up; then ok "automation Chrome already on :$CHROME_PORT"; return 0; fi
+  [ -x "$CHROME_BIN" ] || { bad "Chrome not found at $CHROME_BIN"; info "set AA_CHROME_BIN"; return 1; }
+
+  mkdir -p "$CHROME_DIR"
+  ( "$CHROME_BIN" \
+      --remote-debugging-port="$CHROME_PORT" \
+      --user-data-dir="$CHROME_DIR" \
+      --no-first-run --no-default-browser-check \
+      --remote-allow-origins="$BU_CDP_URL" \
+      about:blank > "$LOGS/chrome.log" 2>&1 < /dev/null & )
+
+  local i=0
+  while [ "$i" -lt 25 ]; do
+    chrome_endpoint_up && { ok "automation Chrome launched on :$CHROME_PORT (dedicated signed-out profile)"; return 0; }
+    sleep 1; i=$((i+1))
+  done
+  bad "Chrome did not open a debugging port on :$CHROME_PORT"
+  info "see $LOGS/chrome.log"
+  return 1
+}
+
+restart_daemon() {
+  # The daemon reads BU_CDP_URL once, at start. One left over from a previous
+  # run is still attached to whatever Chrome it found then.
+  pkill -f browser_harness.daemon >/dev/null 2>&1 && sleep 2
   local out rc
-  out="$(cd "$A11Y" && bounded 25 ./browser-harness <<<'print(len(list_tabs()))' 2>&1)"; rc=$?
-  if [ "$rc" -eq 124 ]; then
-    bad "Chrome did not answer within 25s"
-    info "usually an \"Allow remote debugging?\" prompt waiting in Chrome — click Allow, then re-run"
-    return 1
-  fi
+  out="$(cd "$A11Y" && bounded 30 ./browser-harness <<<'print(len(list_tabs(include_chrome=True)))' 2>&1)"; rc=$?
+  if [ "$rc" -eq 124 ]; then bad "harness could not reach Chrome within 30s"; info "see $LOGS/chrome.log"; return 1; fi
   case "$out" in
-    *"Allow remote debugging"*|*permission-blocked*)
-      bad "Chrome is waiting on an \"Allow remote debugging?\" prompt"
-      info "click Allow in Chrome (or: browser-harness mac-approve), then re-run"
-      return 1 ;;
-    *[0-9]*) ok "Chrome reachable over CDP"; return 0 ;;
-    *) bad "Chrome unreachable: $(printf '%s' "$out" | tail -1 | cut -c1-70)"; return 1 ;;
+    *[0-9]*) ok "harness attached to the automation Chrome"; return 0 ;;
+    *) bad "harness could not attach: $(printf '%s' "$out" | tail -1 | cut -c1-70)"; return 1 ;;
   esac
 }
 
@@ -108,11 +149,16 @@ start_one() {  # start_one <name> <port> <dir> <cmd...>
 up() {
   echo "preflight"
   preflight || { echo; bad "fix the above and re-run"; return 1; }
-  check_chrome || return 1
+
+  echo; echo "chrome"
+  start_chrome   || return 1
+  restart_daemon || return 1
 
   echo; echo "services"
   start_one librarian  8080 "$TOOLKIT" node server/index.js     || return 1
   start_one onboarding 4000 "$TOOLKIT" node onboarding/server.js || return 1
+  # BU_CDP_URL is exported, so the agent's own browser-harness calls attach to
+  # the same automation Chrome rather than hunting for a default profile.
   start_one agent      8787 "$AGENT"   ./run.sh                 || return 1
 
   # The receiver is restarted every time: it pins a tab at startup, and a stale
@@ -147,6 +193,7 @@ status() {
     if port_up "${ports[$i]}"; then ok "${names[$i]} :${ports[$i]}"
     else bad "${names[$i]} :${ports[$i]} down"; fi
   done
+  chrome_endpoint_up && ok "automation Chrome :$CHROME_PORT" || bad "automation Chrome :$CHROME_PORT down"
   pgrep -f browser_harness.daemon >/dev/null 2>&1 && ok "harness daemon" || bad "harness daemon down"
   curl -s -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && ok "librarian answering" || bad "librarian not answering"
   curl -s -m 3 http://127.0.0.1:8787/health >/dev/null 2>&1 && ok "agent answering"     || bad "agent not answering"
