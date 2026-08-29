@@ -33,6 +33,16 @@ CHROME_DIR="${AA_CHROME_PROFILE:-$HOME/.a11y-chrome}"
 CHROME_BIN="${AA_CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 export BU_CDP_URL="http://127.0.0.1:$CHROME_PORT"
 
+# Both node services read ADMIN_PASSWORD from their environment at boot. Started
+# without it the Librarian falls back to an insecure dev default and the
+# onboarding UI reports "admin service is not configured" — it computes
+# adminEnabled as !!ADMIN_PASSWORD. Take it from this repo's .env so a shell
+# that happens to have it exported is not load-bearing.
+if [ -f "$A11Y/.env" ]; then
+  ADMIN_PASSWORD="$(sed -n 's/^ADMIN_PASSWORD=//p' "$A11Y/.env" | head -1)"
+  [ -n "${ADMIN_PASSWORD:-}" ] && export ADMIN_PASSWORD
+fi
+
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 info() { printf '    %s\n' "$1"; }
@@ -71,6 +81,10 @@ preflight() {
     bad "agent service not found at $AGENT"; info "set AA_AGENT_DIR"; fail=1; }
   [ -f "$A11Y/src/browser_harness/a11y/bundle.js" ] && ok "adapter bundle built" || {
     bad "adapter bundle missing"; info "run: python3 scripts/build_a11y.py"; fail=1; }
+
+  if [ -n "${ADMIN_PASSWORD:-}" ]; then ok "ADMIN_PASSWORD present"
+  else bad "ADMIN_PASSWORD missing"
+       info "add it to $A11Y/.env — onboarding will report \"admin service is not configured\""; fail=1; fi
 
   # The agent needs a key, and fails only when a task actually runs otherwise.
   if grep -qs '^GEMINI_API_KEY=.' "$AGENT/../.env"; then ok "GEMINI_API_KEY present"
@@ -164,7 +178,13 @@ up() {
   # The receiver is restarted every time: it pins a tab at startup, and a stale
   # one silently keeps serving an old target (and old code — a second copy just
   # exits with "address already in use" while the old one answers).
-  if port_up 9333; then kill "$(port_pid 9333)" 2>/dev/null; sleep 2; fi
+  if port_up 9333; then
+    # Killed quietly: bash's job-control notice prints after the run finishes and
+    # reads like the new receiver died, when it is the old one being replaced.
+    kill "$(port_pid 9333)" 2>/dev/null
+    disown 2>/dev/null || true
+    sleep 2
+  fi
 
   echo; echo "layout"
   local ids
@@ -179,7 +199,7 @@ PY
   if [ -n "$driven" ]; then ok "Controller and driven page tiled side by side"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
 
-  ( cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
+  ( set +m; cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
       > "$LOGS/control.log" 2>&1 < /dev/null & )
   if wait_for 9333 20; then ok "receiver started on :9333${driven:+ (pinned)}"
   else bad "receiver did not start"; info "see $LOGS/control.log"; return 1; fi
@@ -223,6 +243,12 @@ status() {
   pgrep -f browser_harness.daemon >/dev/null 2>&1 && ok "harness daemon" || bad "harness daemon down"
   curl -s -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && ok "librarian answering" || bad "librarian not answering"
   curl -s -m 3 http://127.0.0.1:8787/health >/dev/null 2>&1 && ok "agent answering"     || bad "agent not answering"
+  if curl -s -m 3 http://127.0.0.1:4000/api/config | grep -q '"adminEnabled":true'; then
+    ok "onboarding admin enabled"
+  else
+    bad "onboarding reports admin not configured"
+    info "ADMIN_PASSWORD was unset when :4000 started — scripts/a11y down && scripts/a11y up"
+  fi
   # A token minted against a different DATA_DIR looks like a working service.
   if [ -f "$A11Y/.env" ]; then
     local tok; tok="$(sed -n 's/^AI4A11Y_TOKEN=//p' "$A11Y/.env" | head -1)"
