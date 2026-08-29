@@ -450,8 +450,16 @@ def a11y_layout(controller_url=None, controller_side="left", split=0.5):
     controller_url = controller_url or CONTROLLER_URL
 
     # The page being driven: reuse the current tab unless it is the Controller.
+    # A tab that will not answer the probe gets a fresh one rather than failing
+    # the whole layout — "cannot tell" and "is the Controller" want the same
+    # answer, since driving the Controller ends the session.
     driven = current_tab()["targetId"]
-    if _js("return !!document.querySelector('.aa-controller')") is True:
+    try:
+        looks_like_controller = js(
+            "return !!document.querySelector('.aa-controller')", target_id=driven) is True
+    except Exception:
+        looks_like_controller = True
+    if looks_like_controller:
         driven = cdp("Target.createTarget", url="about:blank")["targetId"]
 
     # The Controller, in a window of its own.

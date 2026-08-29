@@ -173,7 +173,9 @@ import json
 print(json.dumps(a11y_layout(controller_url="$CONTROLLER_URL")))
 PY
 )"
-  local driven; driven="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["driven"])' 2>/dev/null)"
+  local driven controller
+  driven="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["driven"])' 2>/dev/null)"
+  controller="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["controller"])' 2>/dev/null)"
   if [ -n "$driven" ]; then ok "Controller and driven page tiled side by side"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
 
@@ -182,8 +184,32 @@ PY
   if wait_for 9333 20; then ok "receiver started on :9333${driven:+ (pinned)}"
   else bad "receiver did not start"; info "see $LOGS/control.log"; return 1; fi
 
+  # Connect the Controller for them. Only now: the button opens a WebSocket, so
+  # clicking it before the receiver is listening fails silently and leaves the
+  # person looking at a Controller that quietly drives nothing.
+  if [ -n "$controller" ]; then
+    local note
+    note="$(cd "$A11Y" && bounded 30 ./browser-harness <<CONNECT 2>/dev/null | tail -1
+import time
+js("document.getElementById('connect-local')?.click(); return 1", target_id="$controller")
+n = ""
+for _ in range(20):
+    time.sleep(0.25)
+    n = js("const e=document.getElementById('drive-note'); return e ? e.textContent.trim() : ''", target_id="$controller")
+    if "remote receiver" in n:
+        break
+print(n)
+CONNECT
+)"
+    case "$note" in
+      *"remote receiver"*) ok "Controller connected to the harness" ;;
+      *) bad "Controller did not connect automatically"
+         info "click \"Connect to local harness\" in the Controller" ;;
+    esac
+  fi
+
   echo; status
-  echo; info "In the Controller, click \"Connect to local harness\"."
+  echo; info "Ready — type into the Controller on the left."
 }
 
 status() {
