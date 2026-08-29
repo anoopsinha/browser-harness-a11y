@@ -422,13 +422,23 @@ class Receiver:
                 url = self._eval("return location.href")
                 where = (
                     f"WORKING TAB: browser-harness targetId {self._target} "
-                    f"(currently {url}). Call switch_tab('{self._target}') before "
-                    f"anything else and do all work there. "
+                    f"(currently {url}). Call switch_tab('{self._target}') first "
+                    f"and do ALL work in that tab. "
+                    # The skill tells agents "first navigation is new_tab(url)".
+                    # Here that is wrong and has to be overridden explicitly: the
+                    # tab already exists and is positioned beside the person's
+                    # Controller, so a new one lands in the wrong window and they
+                    # lose sight of what is happening.
+                    f"Navigate with goto_url(...) — do NOT call new_tab(). The "
+                    f"skill's \"first navigation is new_tab\" rule does not apply: "
+                    f"this tab already exists and sits beside the person's "
+                    f"Controller, and a new tab opens in the wrong window where "
+                    f"they cannot see it. "
                     f"Never act on a tab running the accessibility Controller — "
-                    f"it is the control surface the person is typing into, and "
-                    f"navigating it away ends the session. If the working tab is "
-                    f"gone, open a NEW tab with new_tab(); never take over an "
-                    f"existing one you did not open. ")
+                    f"that is the control surface they are typing into, and "
+                    f"navigating it away ends the session. "
+                    f"Only if switch_tab fails because that tab is gone, open one "
+                    f"with new_tab(). ")
             except Exception:
                 pass
 
