@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+# Start, check, and stop the accessibility stack.
+#
+#   scripts/a11y up       start everything, verify it, lay the windows out
+#   scripts/a11y status   what is running, and what is wrong
+#   scripts/a11y down     stop everything this script starts
+#
+# Every failure here has bitten us at least once. The point of the script is
+# that each one now reports what to do rather than surfacing three layers down
+# as "That didn't work".
+set -uo pipefail
+
+A11Y="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+TOOLKIT="${AA_TOOLKIT_DIR:-$A11Y/../AI-for-Accessibility-Toolkit-Draft}"
+AGENT="${AA_AGENT_DIR:-$A11Y/../browser-harness/extension-service}"
+CONTROLLER_URL="${AA_CONTROLLER_URL:-http://127.0.0.1:4000/controller}"
+LOGS="${AA_LOG_DIR:-/tmp}"
+
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
+info() { printf '    %s\n' "$1"; }
+
+port_pid() { lsof -ti "tcp:$1" -sTCP:LISTEN 2>/dev/null | head -1; }
+
+# macOS has no timeout(1). Every browser-harness call can block for the length
+# of Chrome's permission handshake (~45s), so nothing here runs unbounded — a
+# waiting prompt should report itself, not hang the script.
+bounded() {  # bounded <seconds> <cmd...>
+  local secs="$1"; shift
+  # <&0 explicitly: bash points a background job's stdin at /dev/null, which
+  # would silently swallow the heredoc these calls are driven by.
+  "$@" <&0 & local pid=$!
+  local i=0
+  while kill -0 "$pid" 2>/dev/null; do
+    [ "$i" -ge "$secs" ] && { kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; }
+    sleep 1; i=$((i+1))
+  done
+  wait "$pid"
+}
+port_up()  { [ -n "$(port_pid "$1")" ]; }
+
+wait_for() {  # wait_for <port> <seconds>
+  local i=0
+  while [ "$i" -lt "$2" ]; do port_up "$1" && return 0; sleep 1; i=$((i+1)); done
+  return 1
+}
+
+# ── preflight ───────────────────────────────────────────────────────────────
+preflight() {
+  local fail=0
+  [ -d "$TOOLKIT/server" ] && ok "toolkit checkout: $TOOLKIT" || {
+    bad "toolkit not found at $TOOLKIT"; info "set AA_TOOLKIT_DIR"; fail=1; }
+  [ -x "$AGENT/run.sh" ] && ok "agent service: $AGENT" || {
+    bad "agent service not found at $AGENT"; info "set AA_AGENT_DIR"; fail=1; }
+  [ -f "$A11Y/src/browser_harness/a11y/bundle.js" ] && ok "adapter bundle built" || {
+    bad "adapter bundle missing"; info "run: python3 scripts/build_a11y.py"; fail=1; }
+
+  # The agent needs a key, and fails only when a task actually runs otherwise.
+  if grep -qs '^GEMINI_API_KEY=.' "$AGENT/../.env"; then ok "GEMINI_API_KEY present"
+  else bad "GEMINI_API_KEY missing"; info "add it to $AGENT/../.env — tasks will fail without it"; fail=1; fi
+
+  # A bare `browser-harness` must be THIS checkout: a stale global silently
+  # loses the a11y helpers and the IPC stream-limit fix.
+  local which_bh; which_bh="$(command -v browser-harness || true)"
+  if [ -z "$which_bh" ]; then
+    bad "no browser-harness on PATH"; info "ln -sfn $A11Y/scripts/agent-path/browser-harness ~/.local/bin/browser-harness"; fail=1
+  elif bounded 20 browser-harness <<<'import sys; sys.exit(0 if "a11y_apply" in dir() else 1)' >/dev/null 2>&1; then
+    ok "browser-harness on PATH has the a11y helpers"
+  else
+    bad "browser-harness on PATH is not this checkout ($which_bh)"
+    info "ln -sfn $A11Y/scripts/agent-path/browser-harness ~/.local/bin/browser-harness"; fail=1
+  fi
+  return $fail
+}
+
+# ── chrome ──────────────────────────────────────────────────────────────────
+check_chrome() {
+  if ! pgrep -f "Google Chrome" >/dev/null 2>&1; then
+    bad "Chrome is not running"; info "start Chrome, then re-run"; return 1
+  fi
+  # The permission prompt is the single most common cause of "That didn't work".
+  local out rc
+  out="$(cd "$A11Y" && bounded 25 ./browser-harness <<<'print(len(list_tabs()))' 2>&1)"; rc=$?
+  if [ "$rc" -eq 124 ]; then
+    bad "Chrome did not answer within 25s"
+    info "usually an \"Allow remote debugging?\" prompt waiting in Chrome — click Allow, then re-run"
+    return 1
+  fi
+  case "$out" in
+    *"Allow remote debugging"*|*permission-blocked*)
+      bad "Chrome is waiting on an \"Allow remote debugging?\" prompt"
+      info "click Allow in Chrome (or: browser-harness mac-approve), then re-run"
+      return 1 ;;
+    *[0-9]*) ok "Chrome reachable over CDP"; return 0 ;;
+    *) bad "Chrome unreachable: $(printf '%s' "$out" | tail -1 | cut -c1-70)"; return 1 ;;
+  esac
+}
+
+# ── services ────────────────────────────────────────────────────────────────
+start_one() {  # start_one <name> <port> <dir> <cmd...>
+  local name="$1" port="$2" dir="$3"; shift 3
+  if port_up "$port"; then ok "$name already up on :$port"; return 0; fi
+  ( cd "$dir" && nohup "$@" > "$LOGS/$name.log" 2>&1 < /dev/null & )
+  if wait_for "$port" 25; then ok "$name started on :$port"
+  else bad "$name did not come up on :$port"; info "see $LOGS/$name.log"; return 1; fi
+}
+
+up() {
+  echo "preflight"
+  preflight || { echo; bad "fix the above and re-run"; return 1; }
+  check_chrome || return 1
+
+  echo; echo "services"
+  start_one librarian  8080 "$TOOLKIT" node server/index.js     || return 1
+  start_one onboarding 4000 "$TOOLKIT" node onboarding/server.js || return 1
+  start_one agent      8787 "$AGENT"   ./run.sh                 || return 1
+
+  # The receiver is restarted every time: it pins a tab at startup, and a stale
+  # one silently keeps serving an old target (and old code — a second copy just
+  # exits with "address already in use" while the old one answers).
+  if port_up 9333; then kill "$(port_pid 9333)" 2>/dev/null; sleep 2; fi
+
+  echo; echo "layout"
+  local ids
+  ids="$(cd "$A11Y" && bounded 40 ./browser-harness <<PY 2>/dev/null | tail -1
+import json
+print(json.dumps(a11y_layout(controller_url="$CONTROLLER_URL")))
+PY
+)"
+  local driven; driven="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["driven"])' 2>/dev/null)"
+  if [ -n "$driven" ]; then ok "Controller and driven page tiled side by side"
+  else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
+
+  ( cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
+      > "$LOGS/control.log" 2>&1 < /dev/null & )
+  if wait_for 9333 20; then ok "receiver started on :9333${driven:+ (pinned)}"
+  else bad "receiver did not start"; info "see $LOGS/control.log"; return 1; fi
+
+  echo; status
+  echo; info "In the Controller, click \"Connect to local harness\"."
+}
+
+status() {
+  echo "status"
+  local names=(librarian onboarding agent receiver) ports=(8080 4000 8787 9333)
+  for i in "${!ports[@]}"; do
+    if port_up "${ports[$i]}"; then ok "${names[$i]} :${ports[$i]}"
+    else bad "${names[$i]} :${ports[$i]} down"; fi
+  done
+  pgrep -f browser_harness.daemon >/dev/null 2>&1 && ok "harness daemon" || bad "harness daemon down"
+  curl -s -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && ok "librarian answering" || bad "librarian not answering"
+  curl -s -m 3 http://127.0.0.1:8787/health >/dev/null 2>&1 && ok "agent answering"     || bad "agent not answering"
+  # A token minted against a different DATA_DIR looks like a working service.
+  if [ -f "$A11Y/.env" ]; then
+    local tok; tok="$(sed -n 's/^AI4A11Y_TOKEN=//p' "$A11Y/.env" | head -1)"
+    if [ -n "$tok" ] && curl -s -m 3 -H "Authorization: Bearer $tok" \
+         http://localhost:8080/v1/whoami | grep -q '"uid"'; then ok "profile token valid"
+    else bad "profile token invalid or missing"
+         info "mint one: POST /admin/tokens, then set AI4A11Y_TOKEN in .env"; fi
+  fi
+}
+
+down() {
+  echo "stopping"
+  for p in 9333 8787 4000 8080; do
+    local pid; pid="$(port_pid "$p")"
+    [ -n "$pid" ] && { kill "$pid" 2>/dev/null; ok "stopped :$p"; } || info ":$p already down"
+  done
+}
+
+case "${1:-up}" in
+  up)     up ;;
+  status) status ;;
+  down)   down ;;
+  *) echo "usage: scripts/a11y [up|status|down]" >&2; exit 2 ;;
+esac

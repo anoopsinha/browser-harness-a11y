@@ -434,6 +434,51 @@ def a11y_snapshot(max_lines=600):
     return text
 
 
+CONTROLLER_URL = os.environ.get("AA_CONTROLLER_URL", "http://127.0.0.1:4000/controller")
+
+
+def a11y_layout(controller_url=None, controller_side="left", split=0.5):
+    """Put the Controller and the page it drives side by side, and return both.
+
+    Chrome's own Split View is a browser-UI feature with no CDP surface, so this
+    tiles two windows instead — same result, and scriptable. The Controller gets
+    its own window so it can never be the tab an agent navigates away.
+
+    Returns {"controller": targetId, "driven": targetId} — pass the driven id to
+    `browser-harness control --target`.
+    """
+    controller_url = controller_url or CONTROLLER_URL
+
+    # The page being driven: reuse the current tab unless it is the Controller.
+    driven = current_tab()["targetId"]
+    if _js("return !!document.querySelector('.aa-controller')") is True:
+        driven = cdp("Target.createTarget", url="about:blank")["targetId"]
+
+    # The Controller, in a window of its own.
+    controller = cdp("Target.createTarget", url=controller_url,
+                     newWindow=True)["targetId"]
+
+    screen = js("return {w: screen.availWidth, h: screen.availHeight,"
+                " l: screen.availLeft || 0, t: screen.availTop || 0}",
+                target_id=driven)
+    half = int(screen["w"] * split)
+    left = {"left": screen["l"], "top": screen["t"],
+            "width": half, "height": screen["h"], "windowState": "normal"}
+    right = {"left": screen["l"] + half, "top": screen["t"],
+             "width": screen["w"] - half, "height": screen["h"], "windowState": "normal"}
+    if controller_side != "left":
+        left, right = right, left
+
+    for tid, bounds in ((controller, left), (driven, right)):
+        wid = cdp("Browser.getWindowForTarget", targetId=tid)["windowId"]
+        # A maximised window ignores bounds; normalise first.
+        cdp("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "normal"})
+        cdp("Browser.setWindowBounds", windowId=wid, bounds=bounds)
+
+    return {"controller": controller, "driven": driven,
+            "screen": screen, "controller_side": controller_side}
+
+
 def a11y_audit():
     """Run the toolkit's auditors over the live page and return their findings."""
     _need_attached()
@@ -443,5 +488,5 @@ def a11y_audit():
 __all__ = [
     "a11y_attach", "a11y_profiles", "a11y_profile", "a11y_apply", "a11y_off",
     "a11y_status", "a11y_service", "a11y_sync", "a11y_snapshot", "a11y_audit",
-    "a11y_sticky",
+    "a11y_sticky", "a11y_layout",
 ]
