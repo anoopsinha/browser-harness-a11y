@@ -220,8 +220,8 @@ PY
   pct="$(printf '%s' "$ids" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(round(100*d["actual_width"]/d["screen"]["w"]))' 2>/dev/null)"
   was_clamped="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["clamped"])' 2>/dev/null)"
   if [ -n "$driven" ]; then
-    ok "chat (${pct:-25}%) and driven page tiled side by side"
-    [ "$was_clamped" = "True" ] && info "Chrome will not size a window below ${actual_w}px, so the chat is ${pct}% rather than the 25% asked for"
+    ok "chat (${pct:-33}%) and driven page tiled side by side"
+    [ "$was_clamped" = "True" ] && info "Chrome will not size a window below ${actual_w}px, so the chat is ${pct}% rather than the third asked for"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
 
   ( set +m; cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
