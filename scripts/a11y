@@ -215,7 +215,13 @@ PY
   local driven controller
   driven="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["driven"])' 2>/dev/null)"
   controller="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["controller"])' 2>/dev/null)"
-  if [ -n "$driven" ]; then ok "chat (25%) and driven page (75%) tiled side by side"
+  local actual_w pct was_clamped
+  actual_w="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["actual_width"])' 2>/dev/null)"
+  pct="$(printf '%s' "$ids" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(round(100*d["actual_width"]/d["screen"]["w"]))' 2>/dev/null)"
+  was_clamped="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["clamped"])' 2>/dev/null)"
+  if [ -n "$driven" ]; then
+    ok "chat (${pct:-25}%) and driven page tiled side by side"
+    [ "$was_clamped" = "True" ] && info "Chrome will not size a window below ${actual_w}px, so the chat is ${pct}% rather than the 25% asked for"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
 
   ( set +m; cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \

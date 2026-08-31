@@ -474,22 +474,36 @@ def a11y_layout(controller_url=None, controller_side="left", split=0.25):
     screen = js("return {w: screen.availWidth, h: screen.availHeight,"
                 " l: screen.availLeft || 0, t: screen.availTop || 0}",
                 target_id=driven)
-    half = int(screen["w"] * split)
-    left = {"left": screen["l"], "top": screen["t"],
-            "width": half, "height": screen["h"], "windowState": "normal"}
-    right = {"left": screen["l"] + half, "top": screen["t"],
-             "width": screen["w"] - half, "height": screen["h"], "windowState": "normal"}
-    if controller_side != "left":
-        left, right = right, left
-
-    for tid, bounds in ((controller, left), (driven, right)):
+    def place(tid, bounds):
         wid = cdp("Browser.getWindowForTarget", targetId=tid)["windowId"]
         # A maximised window ignores bounds; normalise first.
         cdp("Browser.setWindowBounds", windowId=wid, bounds={"windowState": "normal"})
         cdp("Browser.setWindowBounds", windowId=wid, bounds=bounds)
+        return cdp("Browser.getWindowForTarget", targetId=tid)["bounds"]
 
-    return {"controller": controller, "driven": driven,
-            "screen": screen, "controller_side": controller_side}
+    # Place the control surface first and read back what Chrome actually gave.
+    # Chrome enforces a ~500px minimum window width, so a narrower request comes
+    # back wider — and positioning the other window at the *requested* edge left
+    # the two overlapping, with the chat covering part of the page it drives.
+    want = int(screen["w"] * split)
+    on_left = controller_side == "left"
+    got = place(controller, {
+        "left": screen["l"] if on_left else screen["l"] + screen["w"] - want,
+        "top": screen["t"], "width": want, "height": screen["h"],
+        "windowState": "normal"})
+    used = got.get("width") or want
+
+    place(driven, {
+        "left": screen["l"] + used if on_left else screen["l"],
+        "top": screen["t"], "width": screen["w"] - used, "height": screen["h"],
+        "windowState": "normal"})
+
+    return {"controller": controller, "driven": driven, "screen": screen,
+            "controller_side": controller_side,
+            "requested_width": want, "actual_width": used,
+            # Chrome would not go narrower; the caller can say so rather than
+            # leaving someone to wonder why 25% looks like 26%.
+            "clamped": used != want}
 
 
 def a11y_audit():
