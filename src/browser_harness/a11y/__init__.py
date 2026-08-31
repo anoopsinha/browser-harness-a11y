@@ -434,15 +434,20 @@ def a11y_snapshot(max_lines=600):
     return text
 
 
-CONTROLLER_URL = os.environ.get("AA_CONTROLLER_URL", "http://127.0.0.1:4000/controller")
+CONTROLLER_URL = os.environ.get("AA_CONTROLLER_URL", "http://127.0.0.1:4000/chat")
 
 
-def a11y_layout(controller_url=None, controller_side="left", split=0.5):
+def a11y_layout(controller_url=None, controller_side="left", split=0.25):
     """Put the Controller and the page it drives side by side, and return both.
 
     Chrome's own Split View is a browser-UI feature with no CDP surface, so this
     tiles two windows instead — same result, and scriptable. The Controller gets
     its own window so it can never be the tab an agent navigates away.
+
+    `split` is the fraction of the screen the control surface gets; the page
+    being driven takes the rest. A quarter is enough for a chat column and leaves
+    the page itself readable, which matters when the adaptations being applied
+    are about legibility.
 
     Returns {"controller": targetId, "driven": targetId} — pass the driven id to
     `browser-harness control --target`.

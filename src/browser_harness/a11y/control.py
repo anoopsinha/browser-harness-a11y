@@ -82,9 +82,18 @@ def is_controller_tab(tid):
     typing into.
     """
     try:
-        return bool(js("return !!document.querySelector('.aa-controller')", target_id=tid))
+        return bool(js(
+            # Two shapes over the same core: /controller mounts the widget, while
+            # /chat builds its own window with createController and never calls
+            # mountController — so there is no .aa-controller on it, and looking
+            # only for that would let the agent navigate away the very chat the
+            # person is typing into.
+            "return !!(document.querySelector('.aa-controller')"
+            " || (document.getElementById('composer-input')"
+            "     && document.getElementById('transcript')))",
+            target_id=tid))
     except Exception:
-        return False  # a tab that will not answer is not the Controller
+        return False  # a tab that will not answer is not a control surface
 
 
 def _lost_browser(msg):

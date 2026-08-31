@@ -13,7 +13,7 @@ set -uo pipefail
 A11Y="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 TOOLKIT="${AA_TOOLKIT_DIR:-$A11Y/../AI-for-Accessibility-Toolkit-Draft}"
 AGENT="${AA_AGENT_DIR:-$A11Y/../browser-harness/extension-service}"
-CONTROLLER_URL="${AA_CONTROLLER_URL:-http://127.0.0.1:4000/controller}"
+CONTROLLER_URL="${AA_CONTROLLER_URL:-http://127.0.0.1:4000/chat}"
 LOGS="${AA_LOG_DIR:-/tmp}"
 
 # A dedicated automation Chrome, launched with the debugging port rather than
@@ -138,6 +138,25 @@ start_chrome() {
   return 1
 }
 
+stop_chrome() {
+  # Close it properly, not with a signal. An unclean exit makes Chrome restore
+  # the previous session on next launch, so every restart accumulated tabs — a
+  # days-old Controller tab was still coming back, and stray tabs in the driven
+  # window are exactly what makes it unclear which page the agent is acting on.
+  if chrome_endpoint_up; then
+    ( cd "$A11Y" && bounded 15 ./browser-harness <<<'cdp("Browser.close")' >/dev/null 2>&1 )
+    local i=0
+    while chrome_endpoint_up && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
+  fi
+  if chrome_endpoint_up; then
+    pkill -f "remote-debugging-port=$CHROME_PORT" 2>/dev/null; sleep 2
+    chrome_endpoint_up && { bad "Chrome still up on :$CHROME_PORT"; return 1; }
+    ok "automation Chrome stopped (forced — session may restore next launch)"
+  else
+    ok "automation Chrome closed cleanly"
+  fi
+}
+
 restart_daemon() {
   # The daemon reads BU_CDP_URL once, at start. One left over from a previous
   # run is still attached to whatever Chrome it found then.
@@ -196,7 +215,7 @@ PY
   local driven controller
   driven="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["driven"])' 2>/dev/null)"
   controller="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["controller"])' 2>/dev/null)"
-  if [ -n "$driven" ]; then ok "Controller and driven page tiled side by side"
+  if [ -n "$driven" ]; then ok "chat (25%) and driven page (75%) tiled side by side"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
 
   ( set +m; cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
@@ -211,7 +230,8 @@ PY
     local note
     note="$(cd "$A11Y" && bounded 30 ./browser-harness <<CONNECT 2>/dev/null | tail -1
 import time
-js("document.getElementById('connect-local')?.click(); return 1", target_id="$controller")
+# /chat calls it use-local-harness, /controller calls it connect-local.
+js("(document.getElementById('use-local-harness') || document.getElementById('connect-local'))?.click(); return 1", target_id="$controller")
 n = ""
 for _ in range(20):
     time.sleep(0.25)
@@ -222,14 +242,14 @@ print(n)
 CONNECT
 )"
     case "$note" in
-      *"remote receiver"*) ok "Controller connected to the harness" ;;
-      *) bad "Controller did not connect automatically"
-         info "click \"Connect to local harness\" in the Controller" ;;
+      *"remote receiver"*) ok "chat connected to the harness" ;;
+      *) bad "chat did not connect automatically"
+         info "click \"Connect browser-harness\" in the chat settings drawer" ;;
     esac
   fi
 
   echo; status
-  echo; info "Ready — type into the Controller on the left."
+  echo; info "Ready — type into the chat on the left."
 }
 
 status() {
@@ -261,6 +281,7 @@ status() {
 
 down() {
   echo "stopping"
+  stop_chrome
   for p in 9333 8787 4000 8080; do
     local pid; pid="$(port_pid "$p")"
     [ -n "$pid" ] && { kill "$pid" 2>/dev/null; ok "stopped :$p"; } || info ":$p already down"
