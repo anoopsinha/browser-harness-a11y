@@ -28,10 +28,26 @@ LOGS="${AA_LOG_DIR:-/tmp}"
 # all. A dedicated profile directory gives the same isolation — it starts signed
 # out, so the person logs into whatever they need — and unlike guest it keeps
 # that login for the rest of the session instead of discarding it on close.
+# AA_CHROME_MODE=dedicated (default) launches a clean automation Chrome.
+# AA_CHROME_MODE=attach uses the Chrome you already have open, with your own
+# profile — bookmarks, extensions, and every session you are signed into.
+#
+# Chrome refuses --remote-debugging-port on the default profile (the M136
+# lockdown; the port simply never opens), so "attach" cannot launch it for you.
+# You start Chrome yourself and enable debugging at
+# chrome://inspect/#remote-debugging, and Chrome asks permission per connection
+# — that prompt is the cost of using your real profile, and it is the thing the
+# dedicated mode exists to avoid.
+CHROME_MODE="${AA_CHROME_MODE:-dedicated}"
 CHROME_PORT="${AA_CHROME_PORT:-9222}"
 CHROME_DIR="${AA_CHROME_PROFILE:-$HOME/.a11y-chrome}"
 CHROME_BIN="${AA_CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-export BU_CDP_URL="http://127.0.0.1:$CHROME_PORT"
+# In attach mode the harness finds Chrome itself, through the profile's
+# DevToolsActivePort — pointing BU_CDP_URL at a port nothing is listening on
+# would just make it fail.
+if [ "$CHROME_MODE" = "dedicated" ]; then
+  export BU_CDP_URL="http://127.0.0.1:$CHROME_PORT"
+fi
 
 # Both node services read ADMIN_PASSWORD from their environment at boot. Started
 # without it the Librarian falls back to an insecure dev default and the
@@ -117,6 +133,15 @@ preflight() {
 chrome_endpoint_up() { curl -s -m 2 "$BU_CDP_URL/json/version" >/dev/null 2>&1; }
 
 start_chrome() {
+  if [ "$CHROME_MODE" = "attach" ]; then
+    if ! pgrep -f "MacOS/Google Chrome" >/dev/null 2>&1; then
+      bad "Chrome is not running"
+      info "open Chrome with your own profile, then re-run"
+      return 1
+    fi
+    ok "using your own Chrome (attach mode)"
+    return 0
+  fi
   if chrome_endpoint_up; then ok "automation Chrome already on :$CHROME_PORT"; return 0; fi
   [ -x "$CHROME_BIN" ] || { bad "Chrome not found at $CHROME_BIN"; info "set AA_CHROME_BIN"; return 1; }
 
@@ -139,6 +164,8 @@ start_chrome() {
 }
 
 stop_chrome() {
+  # Never close the browser we did not open.
+  if [ "$CHROME_MODE" = "attach" ]; then info "leaving your Chrome running"; return 0; fi
   # Close it properly, not with a signal. An unclean exit makes Chrome restore
   # the previous session on next launch, so every restart accumulated tabs — a
   # days-old Controller tab was still coming back, and stray tabs in the driven
@@ -165,7 +192,11 @@ restart_daemon() {
   out="$(cd "$A11Y" && bounded 30 ./browser-harness <<<'print(len(list_tabs(include_chrome=True)))' 2>&1)"; rc=$?
   if [ "$rc" -eq 124 ]; then bad "harness could not reach Chrome within 30s"; info "see $LOGS/chrome.log"; return 1; fi
   case "$out" in
-    *[0-9]*) ok "harness attached to the automation Chrome"; return 0 ;;
+    *"Allow remote debugging"*|*permission-blocked*)
+      bad "Chrome is waiting on an \"Allow remote debugging?\" prompt"
+      info "click Allow in Chrome, then re-run — expected in attach mode"
+      return 1 ;;
+    *[0-9]*) ok "harness attached to Chrome"; return 0 ;;
     *) bad "harness could not attach: $(printf '%s' "$out" | tail -1 | cut -c1-70)"; return 1 ;;
   esac
 }
@@ -265,7 +296,11 @@ status() {
     if port_up "${ports[$i]}"; then ok "${names[$i]} :${ports[$i]}"
     else bad "${names[$i]} :${ports[$i]} down"; fi
   done
-  chrome_endpoint_up && ok "automation Chrome :$CHROME_PORT" || bad "automation Chrome :$CHROME_PORT down"
+  if [ "$CHROME_MODE" = "attach" ]; then
+    pgrep -f "MacOS/Google Chrome" >/dev/null 2>&1 && ok "your Chrome (attach mode)" || bad "Chrome not running"
+  else
+    chrome_endpoint_up && ok "automation Chrome :$CHROME_PORT" || bad "automation Chrome :$CHROME_PORT down"
+  fi
   pgrep -f browser_harness.daemon >/dev/null 2>&1 && ok "harness daemon" || bad "harness daemon down"
   curl -s -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && ok "librarian answering" || bad "librarian not answering"
   curl -s -m 3 http://127.0.0.1:8787/health >/dev/null 2>&1 && ok "agent answering"     || bad "agent not answering"
