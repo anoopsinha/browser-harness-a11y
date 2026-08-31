@@ -437,7 +437,8 @@ def a11y_snapshot(max_lines=600):
 CONTROLLER_URL = os.environ.get("AA_CONTROLLER_URL", "http://127.0.0.1:4000/chat")
 
 
-def a11y_layout(controller_url=None, controller_side="left", split=1/3):
+def a11y_layout(controller_url=None, controller_side="left", split=1/3,
+                adopt_current=True):
     """Put the Controller and the page it drives side by side, and return both.
 
     Chrome's own Split View is a browser-UI feature with no CDP surface, so this
@@ -456,18 +457,26 @@ def a11y_layout(controller_url=None, controller_side="left", split=1/3):
     """
     controller_url = controller_url or CONTROLLER_URL
 
-    # The page being driven: reuse the current tab unless it is the Controller.
-    # A tab that will not answer the probe gets a fresh one rather than failing
-    # the whole layout — "cannot tell" and "is the Controller" want the same
-    # answer, since driving the Controller ends the session.
-    driven = current_tab()["targetId"]
-    try:
-        looks_like_controller = js(
-            "return !!document.querySelector('.aa-controller')", target_id=driven) is True
-    except Exception:
-        looks_like_controller = True
-    if looks_like_controller:
-        driven = cdp("Target.createTarget", url="about:blank")["targetId"]
+    # The page being driven. With a throwaway profile the current tab is one we
+    # made, so reusing it is right. Against someone's own Chrome it is whatever
+    # they were reading — adopting it would hand the agent their work to navigate
+    # away, and tiling would move the window they had arranged. adopt_current=
+    # False opens a fresh tab in its own window and leaves everything else alone.
+    if adopt_current:
+        driven = current_tab()["targetId"]
+        # A tab that will not answer the probe gets a fresh one rather than
+        # failing the whole layout — "cannot tell" and "is the Controller" want
+        # the same answer, since driving the Controller ends the session.
+        try:
+            looks_like_controller = js(
+                "return !!document.querySelector('.aa-controller')", target_id=driven) is True
+        except Exception:
+            looks_like_controller = True
+        if looks_like_controller:
+            driven = cdp("Target.createTarget", url="about:blank")["targetId"]
+    else:
+        driven = cdp("Target.createTarget", url="about:blank",
+                     newWindow=True)["targetId"]
 
     # The Controller, in a window of its own.
     controller = cdp("Target.createTarget", url=controller_url,

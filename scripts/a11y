@@ -237,10 +237,17 @@ up() {
   fi
 
   echo; echo "layout"
+  local ADOPT="True"
+  [ "$CHROME_MODE" = "attach" ] && ADOPT="False"
   local ids
   ids="$(cd "$A11Y" && bounded 40 ./browser-harness <<PY 2>/dev/null | tail -1
 import json
-print(json.dumps(a11y_layout(controller_url="$CONTROLLER_URL")))
+# Attach mode drives a browser we did not open: never adopt the tab they were
+# reading, and never move windows they arranged.
+# NOTE: this heredoc is unquoted so ADOPT expands, and it sits in a command
+# substitution — so no apostrophes and no dollar-parens in these comments.
+print(json.dumps(a11y_layout(controller_url="$CONTROLLER_URL",
+                             adopt_current=$ADOPT)))
 PY
 )"
   local driven controller
