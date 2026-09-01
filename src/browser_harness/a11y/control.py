@@ -28,7 +28,7 @@ import urllib.request
 from pathlib import Path
 
 from . import (SERVICE_URL, _build_id, _bundle_source, _guarded, _js,
-               a11y_service, a11y_sync)
+               a11y_service, a11y_sync, a11y_target)
 from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
@@ -626,6 +626,7 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
         receiver._notify = notify
         if sync_on_connect:
             try:
+                await asyncio.to_thread(a11y_target, target)
                 r = await asyncio.to_thread(a11y_sync)
                 _log(f"profile from {SERVICE_URL}: {list(r.get('settings') or {}) or 'none recorded'}")
             except Exception as e:

@@ -85,6 +85,19 @@ _SCRIPTS_FILE = runtime_dir() / "a11y-scripts.json"
 # navigation off it.
 _sticky_enabled = True
 
+# The tab the settings belong to. A long-lived receiver drives one tab while the
+# daemon's "current tab" wanders — so registering the sticky script against
+# current_tab() put it on whatever happened to be in front, and the tab the
+# person was actually using got nothing. Set by a host that pins a target.
+_driven_target = None
+
+
+def a11y_target(target_id=None):
+    """Pin which tab sticky settings are registered against."""
+    global _driven_target
+    _driven_target = target_id
+    return _driven_target
+
 
 def a11y_sticky(enabled=True):
     """Re-apply the current settings automatically on every new page.
@@ -108,7 +121,7 @@ def _script_registry():
 def _persist():
     """(Re)register the new-document script: catalog, plus the settings if any."""
     cdp("Page.enable")
-    target = current_tab()["targetId"]
+    target = _driven_target or current_tab()["targetId"]
     registry = _script_registry()
     for stale in registry.get(target, []):
         try:
@@ -120,6 +133,11 @@ def _persist():
                 source=_document_script()).get("identifier")
 
     registry[target] = [ident] if ident else []
+    # Every tab ever touched left an entry; this had grown to 27 for one
+    # session. Only the recent ones can still be retracted, and a stale id is
+    # harmless to forget.
+    if len(registry) > 12:
+        registry = dict(list(registry.items())[-12:])
     _SCRIPTS_FILE.write_text(json.dumps(registry))
     return ident
 
@@ -526,5 +544,5 @@ def a11y_audit():
 __all__ = [
     "a11y_attach", "a11y_profiles", "a11y_profile", "a11y_apply", "a11y_off",
     "a11y_status", "a11y_service", "a11y_sync", "a11y_snapshot", "a11y_audit",
-    "a11y_sticky", "a11y_layout",
+    "a11y_sticky", "a11y_layout", "a11y_target",
 ]
