@@ -59,7 +59,10 @@ if [ -f "$A11Y/.env" ]; then
   [ -n "${ADMIN_PASSWORD:-}" ] && export ADMIN_PASSWORD
 fi
 
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+# Elapsed seconds since `up` started, so a slow step names itself.
+T0=$(date +%s)
+el() { printf '%3ds' "$(( $(date +%s) - T0 ))"; }
+ok()   { printf '  \033[32m✓\033[0m %s \033[2m(%s)\033[0m\n' "$1" "$(el)"; }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$1"; }
 info() { printf '    %s\n' "$1"; }
 
@@ -146,12 +149,13 @@ start_chrome() {
   [ -x "$CHROME_BIN" ] || { bad "Chrome not found at $CHROME_BIN"; info "set AA_CHROME_BIN"; return 1; }
 
   mkdir -p "$CHROME_DIR"
-  ( "$CHROME_BIN" \
+  ( exec "$CHROME_BIN" \
       --remote-debugging-port="$CHROME_PORT" \
       --user-data-dir="$CHROME_DIR" \
       --no-first-run --no-default-browser-check \
       --remote-allow-origins="$BU_CDP_URL" \
-      about:blank > "$LOGS/chrome.log" 2>&1 < /dev/null & )
+      about:blank > "$LOGS/chrome.log" 2>&1 < /dev/null ) &
+  disown 2>/dev/null || true
 
   local i=0
   while [ "$i" -lt 25 ]; do
@@ -205,7 +209,12 @@ restart_daemon() {
 start_one() {  # start_one <name> <port> <dir> <cmd...>
   local name="$1" port="$2" dir="$3"; shift 3
   if port_up "$port"; then ok "$name already up on :$port"; return 0; fi
-  ( cd "$dir" && nohup "$@" > "$LOGS/$name.log" 2>&1 < /dev/null & )
+  # exec, so the subshell is REPLACED by the service rather than lingering as a
+  # bash process holding this script's stdout. Without it, piping `up` anywhere
+  # (| tee, | grep) never sees EOF and hangs forever, even though the work
+  # itself finishes in about ten seconds.
+  ( cd "$dir" && exec nohup "$@" > "$LOGS/$name.log" 2>&1 < /dev/null ) &
+  disown 2>/dev/null || true
   if wait_for "$port" 25; then ok "$name started on :$port"
   else bad "$name did not come up on :$port"; info "see $LOGS/$name.log"; return 1; fi
 }
@@ -262,8 +271,9 @@ PY
     [ "$was_clamped" = "True" ] && info "Chrome will not size a window below ${actual_w}px, so the chat is ${pct}% rather than the third asked for"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
 
-  ( set +m; cd "$A11Y" && nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
-      > "$LOGS/control.log" 2>&1 < /dev/null & )
+  ( set +m; cd "$A11Y" && exec nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
+      > "$LOGS/control.log" 2>&1 < /dev/null ) &
+  disown 2>/dev/null || true
   if wait_for 9333 20; then ok "receiver started on :9333${driven:+ (pinned)}"
   else bad "receiver did not start"; info "see $LOGS/control.log"; return 1; fi
 
