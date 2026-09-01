@@ -113,3 +113,104 @@ def test_the_sweep_recognises_the_control_surface_itself(receiver, monkeypatch):
     """Skipping happens inside the one round trip, not via a second probe."""
     assert control._IS_CONTROLLER_JS in control._MUTE_JS
     assert "return -1" in control._MUTE_JS
+
+
+# ---- liveCaptions through applySettings ---------------------------------
+# Chrome's Live Caption is not a toolkit adapter, so the receiver answers it
+# itself — and a settings change that drops captions has to take it with them,
+# or "switch off captions" leaves Chrome still captioning.
+
+@pytest.fixture
+def applier(monkeypatch):
+    r = control.Receiver.__new__(control.Receiver)
+    r._target, r._sid, r._undo, r._persist_scope = "driven", "s1", [], None
+    monkeypatch.setattr(control, "_log", lambda *a, **k: None)
+    monkeypatch.setattr(control.Receiver, "_ensure", lambda self: None)
+    return r
+
+
+def test_liveCaptions_alone_never_reaches_the_toolkit(applier, monkeypatch):
+    """The web surface has no adapter for it; it would come back rejected."""
+    monkeypatch.setattr(control, "a11y_live_captions",
+                        lambda on=True, **k: {"live_captions": "off" if not on else "on"})
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: pytest.fail("should not have evaluated: " + e))
+
+    r = applier.applySettings({"liveCaptions": False})
+
+    assert r["applied"] == {"liveCaptions": False}
+    assert r["browser"] == {"live_captions": "off"}
+
+
+def test_the_callers_dict_is_not_mutated(applier, monkeypatch):
+    monkeypatch.setattr(control, "a11y_live_captions", lambda on=True, **k: {})
+    monkeypatch.setattr(control.Receiver, "_eval", lambda self, e: {})
+    changes = {"liveCaptions": True}
+
+    applier.applySettings(changes)
+
+    assert changes == {"liveCaptions": True}
+
+
+def test_switching_captions_off_takes_live_caption_with_them(applier, monkeypatch):
+    """Otherwise Chrome keeps captioning after they asked for captions off."""
+    seen = {}
+
+    def eval_(self, expr):
+        if "activeSettings" in expr:
+            return {"showCaptions": False}   # what is left after the change
+        return {"applied": [{"from": ["showCaptions"]}], "skipped": [], "errors": []}
+
+    monkeypatch.setattr(control.Receiver, "_eval", eval_)
+    def follow(settings):
+        seen["settings"] = settings
+        return {"live_captions": "off"}
+
+    monkeypatch.setattr(control, "_follow_captions", follow)
+
+    r = applier.applySettings({"showCaptions": False})
+
+    assert seen["settings"] == {"showCaptions": False}
+    assert r["browser"] == {"live_captions": "off"}
+
+
+def test_an_explicit_request_is_not_second_guessed(applier, monkeypatch):
+    """They asked for it by name; the profile does not get to overrule that."""
+    monkeypatch.setattr(control, "a11y_live_captions", lambda on=True, **k: {"live_captions": "on"})
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: {"showCaptions": False} if "activeSettings" in e
+                        else {"applied": [{"from": ["largeText"]}], "skipped": [], "errors": []})
+    monkeypatch.setattr(control, "_follow_captions",
+                        lambda s: pytest.fail("explicit request must win"))
+
+    r = applier.applySettings({"largeText": True, "liveCaptions": True})
+
+    assert r["browser"] == {"live_captions": "on"}
+
+
+def test_a_failure_in_the_browser_step_does_not_lose_the_page_change(applier, monkeypatch):
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: {"showCaptions": False} if "activeSettings" in e
+                        else {"applied": [{"from": ["showCaptions"]}], "skipped": [], "errors": []})
+    def boom(_):
+        raise RuntimeError("settings page would not open")
+    monkeypatch.setattr(control, "_follow_captions", boom)
+
+    r = applier.applySettings({"showCaptions": False})
+
+    assert r["applied"] == {"showCaptions": False}
+    assert r["browser"]["live_captions"] == "failed"
+
+
+def test_a_change_the_page_could_not_apply_still_follows_the_browser(applier, monkeypatch):
+    """Turning a setting off yields no 'applied' rows — there is no adapter to
+    report one — so an early return here would strand Chrome still captioning."""
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: {} if "activeSettings" in e
+                        else {"applied": [], "skipped": [], "errors": []})
+    monkeypatch.setattr(control, "_follow_captions", lambda s: {"live_captions": "off"})
+
+    r = applier.applySettings({"showCaptions": False})
+
+    assert r["error"] == "nothing applied"
+    assert r["browser"] == {"live_captions": "off"}

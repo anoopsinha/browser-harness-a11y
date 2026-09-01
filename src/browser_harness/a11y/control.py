@@ -27,8 +27,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import (SERVICE_URL, _build_id, _bundle_source, _guarded, _js,
-               a11y_service, a11y_sync, a11y_target)
+from . import (SERVICE_URL, _build_id, _bundle_source, _follow_captions,
+               _guarded, _js, a11y_live_captions, a11y_service, a11y_sync,
+               a11y_target)
 from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
@@ -324,7 +325,11 @@ class Receiver:
         self._ensure()
         return {
             "platform": "browser-harness",
-            "settingKeys": self._eval("return globalThis.__BH_A11Y.supportedKeys()"),
+            # liveCaptions is ours, not the toolkit's: Chrome captions any audio
+            # on-device, which no page-level adapter can do. Advertised so the
+            # Controller can offer it by name.
+            "settingKeys": (self._eval("return globalThis.__BH_A11Y.supportedKeys()") or [])
+                           + ["liveCaptions"],
             "actions": self._actions(),
             "canReadContent": True,
             "targets": self._eval("return globalThis.__BH_A11Y.targets(40)"),
@@ -349,6 +354,19 @@ class Receiver:
         if not isinstance(changes, dict) or not changes:
             return {"error": "no settings given"}
 
+        # Chrome's Live Caption belongs to this platform, not to the toolkit —
+        # the web surface has no adapter for it, so it would come back rejected.
+        # Answered here instead, and copied rather than popped in place so the
+        # caller's dict is left as they passed it.
+        changes = dict(changes)
+        asked = changes.pop("liveCaptions", None)
+        browser = None
+        if asked is not None:
+            browser = a11y_live_captions(bool(asked))
+            if not changes:
+                return {"applied": {"liveCaptions": bool(asked)}, "previous": {},
+                        "rejected": [], "browser": browser}
+
         before = self._eval("return globalThis.__BH_A11Y.activeSettings()") or {}
         previous = {k: before.get(k) for k in changes}
 
@@ -358,11 +376,29 @@ class Receiver:
             for k in row.get("from", []):
                 if k in changes:
                     applied[k] = changes[k]
+        # An adapter switched off is a change too, and the only evidence of it:
+        # there is no "applied" row for something that stopped.
+        for key in result.get("disabled", []):
+            if key in changes:
+                applied[key] = changes[key]
         rejected = [s["setting"] for s in result.get("skipped", [])]
         rejected += [e["adapter"] for e in result.get("errors", [])]
 
+        # Turning a setting off produces no "applied" rows — there is no adapter
+        # to report — so the browser has to be followed before this early
+        # return, or "switch captions off" leaves Chrome still captioning.
+        if asked is None:
+            try:
+                after = self._eval("return globalThis.__BH_A11Y.activeSettings()") or {}
+                browser = _follow_captions(after)
+            except Exception as e:
+                browser = {"live_captions": "failed", "detail": str(e)}
+
         if not applied:
-            return {"error": "nothing applied", "rejected": rejected}
+            out = {"error": "nothing applied", "rejected": rejected}
+            if browser:
+                out["browser"] = browser
+            return out
 
         self._undo.append({k: previous[k] for k in applied})
 
@@ -376,7 +412,10 @@ class Receiver:
             except Exception as e:
                 _log(f"not persisted: {e}")
 
-        return {"applied": applied, "previous": previous, "rejected": rejected}
+        out = {"applied": applied, "previous": previous, "rejected": rejected}
+        if browser:
+            out["browser"] = browser
+        return out
 
     def undoLast(self):
         if not self._undo:

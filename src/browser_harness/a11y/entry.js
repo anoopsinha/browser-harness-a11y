@@ -96,6 +96,7 @@ function isOff(v) {
 /** Apply a settings object. Returns what happened, per key. */
 function apply(settings = {}) {
   const applied = [];
+  const disabled = [];
   const skipped = [];
   const errors = [];
 
@@ -113,7 +114,18 @@ function apply(settings = {}) {
 
   for (const [key, value] of Object.entries(settings)) {
     if (key === 'enabled' || ABSORBED.has(key)) continue;
-    if (isOff(value)) continue;
+    // An off value used to be skipped outright, which meant apply() could turn
+    // an adapter on but never off — so "switch captions off" did nothing, and
+    // revert() (which routes through here) could not undo an enable either.
+    if (isOff(value)) {
+      const row = APPLY[key];
+      const ad = row && row[0];
+      if (ad && typeof ad.disable === 'function' && ad.enabled) {
+        try { ad.disable(); disabled.push(key); }
+        catch (e) { errors.push({ adapter: key, error: String(e) }); }
+      }
+      continue;
+    }
     if (NEEDS_AI.has(key)) { skipped.push({ setting: key, reason: 'needs-ai' }); continue; }
     if (NEEDS_AUDIT.has(key)) { skipped.push({ setting: key, reason: 'needs-audit-pipeline' }); continue; }
 
@@ -133,7 +145,7 @@ function apply(settings = {}) {
       errors.push({ adapter: key, error: String(e) });
     }
   }
-  return { applied, skipped, errors };
+  return { applied, disabled, skipped, errors };
 }
 
 /** Apply one of the twelve presets by id. */
