@@ -60,6 +60,17 @@ ENGINES = {
     "wikipedia": "https://en.wikipedia.org/w/index.php?search=",
 }
 
+# Typed "stop" arrives as a task, because the Controller sends everything
+# unparsed straight through. Spawning a second agent to reason about the word
+# while the first keeps driving the browser is the opposite of what was asked.
+#
+# Deliberately narrow: the WHOLE utterance must be a stop word. "stop the video"
+# and "stop autoplay" are real instructions for the agent, and only an utterance
+# that is nothing but the intent to halt is treated as one.
+_STOP_RE = re.compile(
+    r"^\s*(stop|stop it|stop that|stop please|please stop|cancel|abort|halt|"
+    r"quit|never ?mind|forget it|enough)\s*[.!]*\s*$", re.I)
+
 REQ = "aa-control-req"
 RES = "aa-control-res"
 # Unsolicited: what the receiver says when something finishes long after the
@@ -402,11 +413,18 @@ class Receiver:
             return {"ok": True, "detail": "stopping"}
 
         if actionId == "task":
+            utterance = text or target or ""
+            # Only while something is running: with nothing to halt, "stop" is
+            # more likely a real instruction ("stop autoplay") and belongs to the
+            # agent.
+            if self._task_running and _STOP_RE.match(utterance):
+                _log(f"heard {utterance.strip()!r} as a stop, not a new task")
+                return self.performAction("stop")
             # meta.returnToController defaults true (PROTOCOL.md); the person can
             # turn it off in the Controller when they would rather stay on the
             # page the task acted on.
             self._return_to_controller = (meta or {}).get("returnToController", True)
-            return self._task(text or target or "")
+            return self._task(utterance)
 
         if actionId in ("back", "forward"):
             self._eval(f"history.{actionId}(); return 1")
