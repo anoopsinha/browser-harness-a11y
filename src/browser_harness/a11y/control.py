@@ -83,10 +83,44 @@ NOTE = "aa-control-note"
 # anything slower than this should fail loudly rather than hang the UI.
 CALL_TIMEOUT = 9.0
 
+# muteAudio walks every tab, and the person is mid-sentence while it does. A
+# browser with dozens of tabs must not push the round trip past the Controller's
+# ten-second timeout, so the walk is bounded rather than exhaustive.
+MUTE_TAB_LIMIT = int(os.environ.get("BH_MUTE_TAB_LIMIT", "25"))
+
 
 def _target_id_of(tab):
     """new_tab() returns a target id; other helpers hand back a dict."""
     return tab.get("targetId") if isinstance(tab, dict) else tab
+
+
+# Two shapes over the same core: /controller mounts the widget, while /chat
+# builds its own window with createController and never calls mountController —
+# so there is no .aa-controller on it, and looking only for that would let the
+# agent navigate away the very chat the person is typing into.
+#
+# Kept as an expression rather than a statement so muteAudio can fold it into
+# its own sweep and skip the control surface without a second round trip.
+_IS_CONTROLLER_JS = (
+    "!!(document.querySelector('.aa-controller')"
+    " || (document.getElementById('composer-input')"
+    "     && document.getElementById('transcript')))"
+)
+
+
+# One round trip per tab: js() answers a top-level `return` by letting Chrome
+# reject it and retrying wrapped, and two round trips per tab is a poor trade
+# while someone waits to speak. Returns -1 for the control surface, which
+# silences its own audio and is where the person is dictating.
+_MUTE_JS = """(() => {
+  if (""" + _IS_CONTROLLER_JS + """) return -1;
+  let n = 0;
+  for (const m of document.querySelectorAll('audio, video')) {
+    if (!m.paused) { try { m.pause(); n++; } catch (e) {} }
+  }
+  try { if (window.speechSynthesis) window.speechSynthesis.cancel(); } catch (e) {}
+  return n;
+})()"""
 
 
 def is_controller_tab(tid):
@@ -99,16 +133,7 @@ def is_controller_tab(tid):
     typing into.
     """
     try:
-        return bool(js(
-            # Two shapes over the same core: /controller mounts the widget, while
-            # /chat builds its own window with createController and never calls
-            # mountController — so there is no .aa-controller on it, and looking
-            # only for that would let the agent navigate away the very chat the
-            # person is typing into.
-            "return !!(document.querySelector('.aa-controller')"
-            " || (document.getElementById('composer-input')"
-            "     && document.getElementById('transcript')))",
-            target_id=tid))
+        return bool(js("return " + _IS_CONTROLLER_JS, target_id=tid))
     except Exception:
         return False  # a tab that will not answer is not a control surface
 
@@ -280,7 +305,8 @@ class Receiver:
         """What we can do. `task` is only offered when an agent is reachable —
         the Controller routes every unparsed utterance to it, so declaring it
         without a backend would swallow commands into a dead end."""
-        base = ["scroll", "activate", "back", "forward", "navigate", "search"]
+        base = ["scroll", "activate", "back", "forward", "navigate", "search",
+                "muteAudio"]
         # `stop` is only meaningful where there is an agent to stop.
         return base + (["task", "stop"] if self._agent_token() else [])
 
@@ -371,6 +397,33 @@ class Receiver:
                           % (json.dumps(mode), int(chunk or 0)))
 
     def performAction(self, actionId, target=None, text=None, meta=None):
+        # Answered before _ensure(): silencing the room must not wait on the
+        # toolkit bundle being injected into a heavy page, nor fail with it.
+        if actionId == "muteAudio":
+            # Fired when voice input starts, so the microphone does not
+            # transcribe whatever is playing. The chat can only reach its own
+            # tab; this receiver owns the browser, so it silences the rest.
+            #
+            # Pause rather than mute: a muted video still advances, so the person
+            # dictates over a clip that has moved on by the time they look back.
+            # speechSynthesis is cancelled too — the loudest thing in the room is
+            # often the Controller reading a result aloud.
+            paused = reached = 0
+            for t in list_tabs(include_chrome=False)[:MUTE_TAB_LIMIT]:
+                tid = t.get("targetId")
+                if not tid:
+                    continue
+                try:
+                    n = int(js(_MUTE_JS, target_id=tid) or 0)
+                    if n < 0:
+                        continue  # the control surface, skipped inside the sweep
+                    reached += 1
+                    paused += n
+                except Exception:
+                    continue  # a tab that will not answer is not worth the wait
+            _log(f"muteAudio: paused {paused} across {reached} tabs")
+            return {"ok": True, "detail": f"paused {paused} in {reached} tabs"}
+
         self._ensure()
         if actionId == "scroll":
             where = (target or "down").lower()
@@ -404,6 +457,7 @@ class Receiver:
             url = ENGINES[engine] + urllib.parse.quote_plus(q)
             self._eval("location.assign(%s); return 1" % json.dumps(url))
             return {"ok": True, "detail": f"searching {engine} for {q}"}
+
 
         if actionId == "stop":
             if not _TASK["running"]:
