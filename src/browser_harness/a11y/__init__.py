@@ -16,7 +16,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ..helpers import cdp, current_tab, js, page_info
+from ..helpers import (activate_tab, cdp, current_tab, js, list_tabs,
+                       new_tab, page_info, switch_tab)
 from ..paths import runtime_dir
 
 BUNDLE = Path(__file__).with_name("bundle.js")
@@ -75,6 +76,31 @@ _sticky_call = None
 # until the page crawls. The identifiers are therefore kept on disk, per target,
 # so a later run can retract what an earlier one left behind.
 _SCRIPTS_FILE = runtime_dir() / "a11y-scripts.json"
+
+# Live Caption is a browser preference, not a page one: it outlives the tab, the
+# session, and us. In attach mode that is the person's own Chrome profile, so we
+# record whether *we* were the ones who switched it on and only ever undo that —
+# a setting they turned on for themselves is not ours to turn off.
+_BROWSER_PREFS_FILE = runtime_dir() / "a11y-browser-prefs.json"
+
+# What the toolkit's Deaf/HoH preset switches on. Either one means the person is
+# reading rather than hearing, and the page-level adapters can only reach a
+# video's own caption track — Chrome's Live Caption is what covers the rest.
+_WANTS_CAPTIONS = ("showCaptions", "autoCaptions")
+
+# The toggle sits behind several shadow roots in the settings WebUI, so it can
+# only be found by walking them. Its id is Chrome's, not ours, and a future
+# release may rename it — every caller here treats "not-found" as an answer.
+_FIND_LIVE_CAPTION = """
+  const find = (root, d) => {
+    if (d > 12 || !root) return null;
+    for (const el of root.querySelectorAll('*')) {
+      if (el.id === 'liveCaptionToggleButton') return el;
+      if (el.shadowRoot) { const f = find(el.shadowRoot, d + 1); if (f) return f; }
+    }
+    return null;
+  };
+"""
 
 # Re-applying the profile on every new document is the behaviour we want: a
 # profile that lapses when the person follows a link is not a profile.
@@ -140,6 +166,103 @@ def _persist():
         registry = dict(list(registry.items())[-12:])
     _SCRIPTS_FILE.write_text(json.dumps(registry))
     return ident
+
+
+def _browser_prefs():
+    try:
+        return json.loads(_BROWSER_PREFS_FILE.read_text())
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def a11y_live_captions(on=True, patience=10.0):
+    """Switch Chrome's own Live Caption on or off.
+
+    Not the same thing as the showCaptions adapter, which turns on a video's own
+    caption track. This is Chrome generating captions on-device for *any* audio,
+    which is the only thing that helps with the untracked video and autoplay
+    clips that otherwise leave someone who is deaf with nothing to read.
+
+    Chrome exposes no CDP surface for its preferences, so this drives the
+    settings page the way a person would. That page is WebUI: reachable, but its
+    element ids belong to Chrome, so a rename shows up here as
+    {"live_captions": "not-found"} rather than an exception.
+    """
+    want = bool(on)
+    here = _driven_target or current_tab()["targetId"]
+
+    opened = False
+    tid = next((t["targetId"] for t in list_tabs(include_chrome=True)
+                if (t.get("url") or "").startswith("chrome://settings")), None)
+    if not tid:
+        tid = new_tab("chrome://settings/accessibility")
+        opened = True
+
+    read = ("(() => {%s const el = find(document, 0);"
+            " return el ? (el.checked ? 'on' : 'off') : 'not-found'; })()"
+            % _FIND_LIVE_CAPTION)
+    click = ("(() => {%s const el = find(document, 0); if (!el) return 'not-found';"
+             " el.click(); return 'clicked'; })()" % _FIND_LIVE_CAPTION)
+    try:
+        # Two waits in one loop. The settings page mounts its shadow roots
+        # asynchronously, so the toggle is missing for a moment on a tab we just
+        # opened; and it then exists for a further moment before it is bound to
+        # the pref, during which a click on it is simply dropped. Clicking once
+        # and trusting it turned Live Caption on about half the time.
+        deadline = time.time() + patience
+        state, was_on = "not-found", None
+        while time.time() < deadline:
+            state = js(read, target_id=tid)
+            if state == "not-found":
+                time.sleep(0.25)
+                continue
+            if was_on is None:
+                was_on = state == "on"
+            if (state == "on") == want:
+                break
+            js(click, target_id=tid)
+            time.sleep(0.5)
+
+        if was_on is None:
+            return {"live_captions": "not-found",
+                    "detail": "Chrome moved the Live Caption toggle; set it by hand"
+                              " at chrome://settings/accessibility"}
+        if (state == "on") != want:
+            return {"live_captions": state, "changed": was_on != (state == "on"),
+                    "detail": f"asked for {'on' if want else 'off'} but the toggle "
+                              f"stayed {state} after {patience:g}s"}
+
+        # Remember only a switch we threw ourselves, so a11y_off leaves alone a
+        # setting they had turned on before we ever ran.
+        prefs = _browser_prefs()
+        if want and not was_on:
+            prefs["live_captions_ours"] = True
+        elif not want:
+            prefs.pop("live_captions_ours", None)
+        _BROWSER_PREFS_FILE.write_text(json.dumps(prefs))
+
+        return {"live_captions": state, "changed": was_on != want}
+    finally:
+        # new_tab attaches the daemon to the tab it opens, so the session has to
+        # come home before that tab is closed — otherwise every later call lands
+        # on a dead target and the daemon answers cdp_disconnected.
+        try:
+            switch_tab(here)
+        except Exception:
+            pass
+        # new_tab reuses the attached tab when it is blank, in which case the
+        # settings page IS the driven tab and closing it would take the page the
+        # person is on with it.
+        if opened and tid != here:
+            try:
+                cdp("Target.closeTarget", targetId=tid)
+            except Exception:
+                pass  # they may have closed it themselves; nothing to clean up
+        # Opening a tab takes the screen away from whatever they were reading.
+        try:
+            activate_tab(here)
+        except Exception:
+            pass
 
 
 def _build_id(source):
@@ -300,6 +423,14 @@ def a11y_off():
     _sticky_call = None
     _persist()  # keep the catalog available, drop the settings
     _settle()   # undoing a scale relayouts the page just as applying it did
+    # Live Caption outlives the page, so "off" has to reach it too — but only
+    # where we were the ones who switched it on.
+    if _browser_prefs().get("live_captions_ours"):
+        try:
+            stopped = {"adapters": stopped, "browser": a11y_live_captions(False)}
+        except Exception as e:
+            stopped = {"adapters": stopped,
+                       "browser": {"live_captions": "failed", "detail": str(e)}}
     return stopped
 
 
@@ -334,6 +465,21 @@ def a11y_service(method, *args, timeout=15.0):
     if not body.get("ok"):
         raise RuntimeError(f"toolkit service {method}: {body.get('error')}")
     return body.get("result")
+
+
+def _follow_captions(settings):
+    """Keep Chrome's Live Caption in step with what the profile asks for.
+
+    Turned on for anyone whose settings say they read rather than hear. Turned
+    off again only if we were the ones who turned it on — see
+    _BROWSER_PREFS_FILE.
+    """
+    wanted = any(settings.get(k) for k in _WANTS_CAPTIONS)
+    if wanted:
+        return a11y_live_captions(True)
+    if _browser_prefs().get("live_captions_ours"):
+        return a11y_live_captions(False)
+    return {"live_captions": "left alone"}
 
 
 def a11y_sync(url=None):
@@ -371,6 +517,13 @@ def a11y_sync(url=None):
         # dropped: a need nobody can meet is a finding, not a silence.
         "unmet": resolved.get("unmet") or [],
     }
+    # Browser-level, so it is followed even when the page adapters have nothing
+    # to do — and never allowed to take the rest of the profile down with it.
+    try:
+        out["browser"] = _follow_captions(settings)
+    except Exception as e:
+        out["browser"] = {"live_captions": "failed", "detail": str(e)}
+
     if not settings:
         out["note"] = "no preferences or needs recorded for this person yet"
         return out
@@ -544,5 +697,5 @@ def a11y_audit():
 __all__ = [
     "a11y_attach", "a11y_profiles", "a11y_profile", "a11y_apply", "a11y_off",
     "a11y_status", "a11y_service", "a11y_sync", "a11y_snapshot", "a11y_audit",
-    "a11y_sticky", "a11y_layout", "a11y_target",
+    "a11y_sticky", "a11y_layout", "a11y_target", "a11y_live_captions",
 ]

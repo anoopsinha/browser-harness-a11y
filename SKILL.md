@@ -199,6 +199,7 @@ a11y_apply(fontScale=150)     # or set named settings directly
 a11y_profile("dyslexia")      # or apply a preset
 a11y_status()                 # which adapters are live
 a11y_off()                    # turn everything off
+a11y_live_captions(True)      # Chrome's own Live Caption (browser-wide, persists)
 PY
 ```
 
@@ -207,6 +208,12 @@ PY
   `darkMode`, `contrastMode`, `motionReducer`, `highlightLinks`, `readingRuler`,
   `bigTargets`, …). Settings applied this way persist across navigation and are
   visible to the rest of the system; a raw CSS change is not.
+- **Captions come from two places.** `showCaptions` turns on a video's own
+  caption track; Chrome's Live Caption has Chrome caption *any* audio on-device,
+  including video with no track at all. `a11y_sync()` switches Live Caption on
+  for anyone whose profile asks for captions, and off again only if it was the
+  one that switched it on — a setting the person made themselves is left alone.
+  It is a browser preference, so it outlives the tab and the session.
 - **Presets**: `blind`, `lowVision`, `colorBlind`, `deaf`, `motor`, `dyslexia`,
   `adhd`, `cognitive`, `olderAdult`, `anxiety`, `sensory`, `photosensitive`.
 - Settings needing an LLM (`autoDescribe`, `autoFixLabels`) report `needs-ai`
