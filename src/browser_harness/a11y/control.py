@@ -707,7 +707,12 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
             try:
                 await asyncio.to_thread(a11y_target, target)
                 r = await asyncio.to_thread(a11y_sync)
-                _log(f"profile from {SERVICE_URL}: {list(r.get('settings') or {}) or 'none recorded'}")
+                # The browser-level part is logged too: it is the only place a
+                # failure to follow the profile into Chrome's own settings would
+                # otherwise be visible.
+                _log(f"profile from {SERVICE_URL}: "
+                     f"{list(r.get('settings') or {}) or 'none recorded'}"
+                     f" | browser: {json.dumps(r.get('browser'))}")
             except Exception as e:
                 _log(f"profile unavailable: {e}")
         try:
