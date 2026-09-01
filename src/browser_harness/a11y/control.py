@@ -123,6 +123,21 @@ def _log(msg):
     print(f"[control] {msg}", flush=True)
 
 
+# One agent, one browser, one process — so the task is process-wide, not per
+# connection. A Receiver is built per WebSocket, and the chat reconnects (on
+# refresh, and after a dropout), so per-instance state meant a task started on
+# one connection was invisible to the Stop that arrived on the next: it answered
+# "nothing running" while the agent was still driving.
+#
+# _notify is deliberately the LATEST connection rather than the one that started
+# the task — a result posted to a socket that has since closed reaches nobody.
+_TASK = {
+    "running": False,
+    "cancelled": threading.Event(),
+    "notify": None,
+}
+
+
 class Receiver:
     """One ControlPort over one WebSocket connection."""
 
@@ -147,10 +162,7 @@ class Receiver:
         # from, so the Controller is found by its own widget in the DOM.
         self._controller_tab = None
         self._return_to_controller = True
-        # Raised by stop(); the worker checks it so a cancelled task reports
-        # being stopped rather than going quiet or announcing a stale result.
-        self._cancelled = threading.Event()
-        self._task_running = False
+        # Task state is shared — see _TASK.
 
     # ---- helpers ---------------------------------------------------------
 
@@ -394,9 +406,9 @@ class Receiver:
             return {"ok": True, "detail": f"searching {engine} for {q}"}
 
         if actionId == "stop":
-            if not self._task_running:
+            if not _TASK["running"]:
                 return {"ok": True, "detail": "nothing running"}
-            self._cancelled.set()
+            _TASK["cancelled"].set()
             token = self._agent_token()
             killed = 0
             try:
@@ -417,7 +429,7 @@ class Receiver:
             # Only while something is running: with nothing to halt, "stop" is
             # more likely a real instruction ("stop autoplay") and belongs to the
             # agent.
-            if self._task_running and _STOP_RE.match(utterance):
+            if _TASK["running"] and _STOP_RE.match(utterance):
                 _log(f"heard {utterance.strip()!r} as a stop, not a new task")
                 return self.performAction("stop")
             # meta.returnToController defaults true (PROTOCOL.md); the person can
@@ -447,9 +459,10 @@ class Receiver:
                     _log("returned focus to the controller tab")
                 except Exception as e:
                     _log(f"could not return focus: {e}")
-        if self._notify:
+        notify = _TASK["notify"] or self._notify
+        if notify:
             try:
-                self._notify(str(text))
+                notify(str(text))
             except Exception as e:
                 _log(f"could not deliver: {e}")
 
@@ -499,8 +512,8 @@ class Receiver:
             except Exception:
                 pass
 
-        self._cancelled.clear()
-        self._task_running = True
+        _TASK["cancelled"].clear()
+        _TASK["running"] = True
 
         def run():
             body = json.dumps({
@@ -521,7 +534,7 @@ class Receiver:
                     # NDJSON: one gemini event per line. The answer is whichever
                     # object last carried a "response"; the rest is progress.
                     for raw in r:
-                        if self._cancelled.is_set():
+                        if _TASK["cancelled"].is_set():
                             break
                         line = raw.decode("utf-8", "replace").strip()
                         if not line:
@@ -551,7 +564,7 @@ class Receiver:
                             text = (text or "") + chunk if ev.get("delta") else chunk
                         elif kind == "result" and ev.get("status") not in (None, "success"):
                             text = text or f"the agent stopped: {ev.get('status')}"
-                if self._cancelled.is_set():
+                if _TASK["cancelled"].is_set():
                     _log("task stopped")
                     self._say("Stopped.")
                     return
@@ -559,14 +572,14 @@ class Receiver:
                 _log(f"task done: {json.dumps(text)[:160]}")
                 self._say(text)
             except Exception as e:
-                if self._cancelled.is_set():
+                if _TASK["cancelled"].is_set():
                     _log("task stopped")
                     self._say("Stopped.")
                 else:
                     _log(f"task failed: {e}")
                     self._say(f"That didn't work: {e}")
             finally:
-                self._task_running = False
+                _TASK["running"] = False
 
         threading.Thread(target=run, daemon=True).start()
         _log(f"task started: {utterance!r}")
@@ -633,6 +646,9 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
             asyncio.run_coroutine_threadsafe(send(), loop)
 
         receiver._notify = notify
+        # Later connections take over delivery, so a task that outlives a
+        # refresh still reports to whoever is actually listening.
+        _TASK["notify"] = notify
         if sync_on_connect:
             try:
                 await asyncio.to_thread(a11y_target, target)
