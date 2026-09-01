@@ -423,7 +423,16 @@ class Receiver:
         previous = self._undo.pop()
         self._ensure()
         self._eval("return globalThis.__BH_A11Y.revert(%s)" % json.dumps(previous))
-        return {"reverted": previous, "remainingUndos": len(self._undo)}
+        out = {"reverted": previous, "remainingUndos": len(self._undo)}
+        # Undo has to reach the browser as well: undoing "captions off" put the
+        # page adapter back while Chrome stayed silent, which is a worse state
+        # than either of the two it was meant to move between.
+        try:
+            after = self._eval("return globalThis.__BH_A11Y.activeSettings()") or {}
+            out["browser"] = _follow_captions(after)
+        except Exception as e:
+            out["browser"] = {"live_captions": "failed", "detail": str(e)}
+        return out
 
     def resetUndo(self):
         self._undo.clear()

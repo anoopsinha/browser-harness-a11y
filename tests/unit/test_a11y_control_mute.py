@@ -214,3 +214,17 @@ def test_a_change_the_page_could_not_apply_still_follows_the_browser(applier, mo
 
     assert r["error"] == "nothing applied"
     assert r["browser"] == {"live_captions": "off"}
+
+
+def test_undo_follows_the_browser_back(applier, monkeypatch):
+    """Undoing 'captions off' restored the page adapter while Chrome stayed
+    silent — a state neither side asked for."""
+    applier._undo.append({"showCaptions": True})
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: {"showCaptions": True} if "activeSettings" in e else {})
+    monkeypatch.setattr(control, "_follow_captions", lambda s: {"live_captions": "on"})
+
+    r = applier.undoLast()
+
+    assert r["reverted"] == {"showCaptions": True}
+    assert r["browser"] == {"live_captions": "on"}
