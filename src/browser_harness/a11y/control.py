@@ -533,20 +533,29 @@ class Receiver:
                         if not isinstance(ev, dict):
                             continue
                         # stream-json events: {type:init}, {type:message, role,
-                        # content, delta?}, {type:result, status}. The answer is
-                        # the assistant's message content — the user role echoes
-                        # the prompt back, so taking any message would report our
-                        # own instructions as the result. Deltas accumulate.
-                        if ev.get("type") == "message" and ev.get("role") == "assistant":
+                        # content, delta?}, {type:tool_use}, {type:tool_result},
+                        # {type:result, status}.
+                        #
+                        # The answer is the assistant's LAST run of messages. It
+                        # narrates before each tool call ("I will use
+                        # browser-harness to..."), so accumulating everything
+                        # returned the whole transcript of its working instead of
+                        # the result. Resetting at each tool call keeps only what
+                        # it said after the final one. The user role is skipped:
+                        # it echoes our own prompt back.
+                        kind = ev.get("type")
+                        if kind in ("tool_use", "tool_result"):
+                            text = None
+                        elif kind == "message" and ev.get("role") == "assistant":
                             chunk = ev.get("content") or ""
                             text = (text or "") + chunk if ev.get("delta") else chunk
-                        elif ev.get("type") == "result" and ev.get("status") not in (None, "success"):
+                        elif kind == "result" and ev.get("status") not in (None, "success"):
                             text = text or f"the agent stopped: {ev.get('status')}"
                 if self._cancelled.is_set():
                     _log("task stopped")
                     self._say("Stopped.")
                     return
-                text = text or "the task finished"
+                text = (text or "").strip() or "the task finished"
                 _log(f"task done: {json.dumps(text)[:160]}")
                 self._say(text)
             except Exception as e:
