@@ -58,6 +58,7 @@ const APPLY = {
   reduceBrightness: on(A.ReduceBrightness),
   soundVisualizer: on(A.SoundVisualizer),
   announceUpdates: on(A.LiveRegionAnnouncer),
+  showCaptions: on(A.ShowCaptions),
   magnifier: on(A.Magnifier),
   flashGuard: on(A.FlashGuard),
   reflowColumn: on(A.ReflowColumn),
