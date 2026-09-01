@@ -194,3 +194,23 @@ def test_captions_switched_off_in_the_profile_do_not_count_as_wanted(spy, prefs_
 
     assert spy == []
     assert r == {"live_captions": "left alone"}
+
+
+def test_an_explicit_request_switches_off_what_we_do_not_own(spy, prefs_file):
+    """"Hide live captions" said aloud, with Live Caption already on before we
+    ever ran: declining it because we did not switch it on is the bug, not the
+    safeguard. Ownership governs the inferred case, not the instruction."""
+    prefs_file.write_text(json.dumps({}))  # not ours
+
+    a11y._follow_captions({"showCaptions": False}, explicit=True)
+
+    assert spy == [False]
+
+
+def test_following_a_profile_still_leaves_what_we_do_not_own(spy, prefs_file):
+    prefs_file.write_text(json.dumps({}))
+
+    r = a11y._follow_captions({"showCaptions": False})
+
+    assert spy == []
+    assert r == {"live_captions": "left alone"}

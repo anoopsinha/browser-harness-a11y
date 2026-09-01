@@ -467,17 +467,22 @@ def a11y_service(method, *args, timeout=15.0):
     return body.get("result")
 
 
-def _follow_captions(settings):
-    """Keep Chrome's Live Caption in step with what the profile asks for.
+def _follow_captions(settings, explicit=False):
+    """Keep Chrome's Live Caption in step with what the person asks for.
 
-    Turned on for anyone whose settings say they read rather than hear. Turned
-    off again only if we were the ones who turned it on — see
-    _BROWSER_PREFS_FILE.
+    Turned on for anyone whose settings say they read rather than hear.
+
+    Turning it off is the asymmetric half. Following a profile, we undo only
+    what we switched on ourselves — inferring that someone no longer wants a
+    setting is not licence to take away one they made for themselves. But when
+    they say "captions off", that is an instruction rather than an inference,
+    and `explicit` says so: refusing it because we did not happen to be the ones
+    who switched Live Caption on reads, correctly, as the thing being broken.
     """
     wanted = any(settings.get(k) for k in _WANTS_CAPTIONS)
     if wanted:
         return a11y_live_captions(True)
-    if _browser_prefs().get("live_captions_ours"):
+    if explicit or _browser_prefs().get("live_captions_ours"):
         return a11y_live_captions(False)
     return {"live_captions": "left alone"}
 

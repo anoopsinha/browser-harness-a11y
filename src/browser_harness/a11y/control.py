@@ -27,9 +27,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import (SERVICE_URL, _build_id, _bundle_source, _follow_captions,
-               _guarded, _js, a11y_live_captions, a11y_service, a11y_sync,
-               a11y_target)
+from . import (SERVICE_URL, _WANTS_CAPTIONS, _build_id, _bundle_source,
+               _follow_captions, _guarded, _js, a11y_live_captions,
+               a11y_service, a11y_sync, a11y_target)
 from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
@@ -390,7 +390,10 @@ class Receiver:
         if asked is None:
             try:
                 after = self._eval("return globalThis.__BH_A11Y.activeSettings()") or {}
-                browser = _follow_captions(after)
+                # They named a caption setting, so this is an instruction about
+                # captions, not something inferred from a profile.
+                browser = _follow_captions(
+                    after, explicit=any(k in changes for k in _WANTS_CAPTIONS))
             except Exception as e:
                 browser = {"live_captions": "failed", "detail": str(e)}
 
@@ -429,7 +432,8 @@ class Receiver:
         # than either of the two it was meant to move between.
         try:
             after = self._eval("return globalThis.__BH_A11Y.activeSettings()") or {}
-            out["browser"] = _follow_captions(after)
+            out["browser"] = _follow_captions(
+                after, explicit=any(k in previous for k in _WANTS_CAPTIONS))
         except Exception as e:
             out["browser"] = {"live_captions": "failed", "detail": str(e)}
         return out

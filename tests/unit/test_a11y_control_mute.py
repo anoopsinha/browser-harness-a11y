@@ -162,8 +162,9 @@ def test_switching_captions_off_takes_live_caption_with_them(applier, monkeypatc
         return {"applied": [{"from": ["showCaptions"]}], "skipped": [], "errors": []}
 
     monkeypatch.setattr(control.Receiver, "_eval", eval_)
-    def follow(settings):
+    def follow(settings, explicit=False):
         seen["settings"] = settings
+        seen["explicit"] = explicit
         return {"live_captions": "off"}
 
     monkeypatch.setattr(control, "_follow_captions", follow)
@@ -171,6 +172,8 @@ def test_switching_captions_off_takes_live_caption_with_them(applier, monkeypatc
     r = applier.applySettings({"showCaptions": False})
 
     assert seen["settings"] == {"showCaptions": False}
+    # they named a caption setting, so it is an instruction, not an inference
+    assert seen["explicit"] is True
     assert r["browser"] == {"live_captions": "off"}
 
 
@@ -181,7 +184,7 @@ def test_an_explicit_request_is_not_second_guessed(applier, monkeypatch):
                         lambda self, e: {"showCaptions": False} if "activeSettings" in e
                         else {"applied": [{"from": ["largeText"]}], "skipped": [], "errors": []})
     monkeypatch.setattr(control, "_follow_captions",
-                        lambda s: pytest.fail("explicit request must win"))
+                        lambda s, explicit=False: pytest.fail("explicit request must win"))
 
     r = applier.applySettings({"largeText": True, "liveCaptions": True})
 
@@ -208,7 +211,8 @@ def test_a_change_the_page_could_not_apply_still_follows_the_browser(applier, mo
     monkeypatch.setattr(control.Receiver, "_eval",
                         lambda self, e: {} if "activeSettings" in e
                         else {"applied": [], "skipped": [], "errors": []})
-    monkeypatch.setattr(control, "_follow_captions", lambda s: {"live_captions": "off"})
+    monkeypatch.setattr(control, "_follow_captions",
+                        lambda s, explicit=False: {"live_captions": "off"})
 
     r = applier.applySettings({"showCaptions": False})
 
@@ -222,9 +226,29 @@ def test_undo_follows_the_browser_back(applier, monkeypatch):
     applier._undo.append({"showCaptions": True})
     monkeypatch.setattr(control.Receiver, "_eval",
                         lambda self, e: {"showCaptions": True} if "activeSettings" in e else {})
-    monkeypatch.setattr(control, "_follow_captions", lambda s: {"live_captions": "on"})
+    monkeypatch.setattr(control, "_follow_captions",
+                        lambda s, explicit=False: {"live_captions": "on"})
 
     r = applier.undoLast()
 
     assert r["reverted"] == {"showCaptions": True}
     assert r["browser"] == {"live_captions": "on"}
+
+
+def test_a_change_about_something_else_does_not_count_as_explicit(applier, monkeypatch):
+    """Making the text bigger says nothing about captions, so ownership still
+    governs whether Chrome's Live Caption is ours to switch off."""
+    seen = {}
+
+    def follow(settings, explicit=False):
+        seen["explicit"] = explicit
+        return {"live_captions": "left alone"}
+
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: {} if "activeSettings" in e
+                        else {"applied": [{"from": ["fontScale"]}], "skipped": [], "errors": []})
+    monkeypatch.setattr(control, "_follow_captions", follow)
+
+    applier.applySettings({"fontScale": 150})
+
+    assert seen["explicit"] is False
