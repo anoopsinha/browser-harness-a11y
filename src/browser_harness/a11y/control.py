@@ -37,7 +37,13 @@ from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 # deciding is done by an external agent — here the Gemini CLI service in the
 # sibling browser-harness checkout, which drives this same browser through the
 # harness skill. Unset AGENT_URL to leave `task` undeclared.
-AGENT_URL = os.environ.get("BH_AGENT_URL", "http://127.0.0.1:8787/run")
+# /stream rather than /run: the service tracks streaming subprocesses so POST
+# /cancel can kill them, and it starts them in their own session so the whole
+# group goes — gemini and the browser-harness child it spawned. /run is a
+# blocking subprocess.run that nothing can interrupt, so a task started there
+# cannot be stopped once it is moving.
+AGENT_URL = os.environ.get("BH_AGENT_URL", "http://127.0.0.1:8787/stream")
+AGENT_CANCEL_URL = os.environ.get("BH_AGENT_CANCEL_URL", "http://127.0.0.1:8787/cancel")
 AGENT_TOKEN_FILE = os.environ.get(
     "BH_AGENT_TOKEN_FILE",
     str(Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/projects"
@@ -130,6 +136,10 @@ class Receiver:
         # from, so the Controller is found by its own widget in the DOM.
         self._controller_tab = None
         self._return_to_controller = True
+        # Raised by stop(); the worker checks it so a cancelled task reports
+        # being stopped rather than going quiet or announcing a stale result.
+        self._cancelled = threading.Event()
+        self._task_running = False
 
     # ---- helpers ---------------------------------------------------------
 
@@ -248,7 +258,8 @@ class Receiver:
         the Controller routes every unparsed utterance to it, so declaring it
         without a backend would swallow commands into a dead end."""
         base = ["scroll", "activate", "back", "forward", "navigate", "search"]
-        return base + (["task"] if self._agent_token() else [])
+        # `stop` is only meaningful where there is an agent to stop.
+        return base + (["task", "stop"] if self._agent_token() else [])
 
     def _find_controller_tab(self):
         """The tab running the Controller widget — not the one we are driving."""
@@ -371,6 +382,25 @@ class Receiver:
             self._eval("location.assign(%s); return 1" % json.dumps(url))
             return {"ok": True, "detail": f"searching {engine} for {q}"}
 
+        if actionId == "stop":
+            if not self._task_running:
+                return {"ok": True, "detail": "nothing running"}
+            self._cancelled.set()
+            token = self._agent_token()
+            killed = 0
+            try:
+                req = urllib.request.Request(
+                    AGENT_CANCEL_URL, data=b"{}", method="POST",
+                    headers={"Authorization": f"Bearer {token}",
+                             "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    killed = (json.loads(r.read()) or {}).get("killed", 0)
+            except Exception as e:
+                _log(f"cancel failed: {e}")
+                return {"ok": False, "detail": f"could not stop the agent: {e}"}
+            _log(f"stop requested; killed {killed}")
+            return {"ok": True, "detail": "stopping"}
+
         if actionId == "task":
             # meta.returnToController defaults true (PROTOCOL.md); the person can
             # turn it off in the Controller when they would rather stay on the
@@ -451,6 +481,9 @@ class Receiver:
             except Exception:
                 pass
 
+        self._cancelled.clear()
+        self._task_running = True
+
         def run():
             body = json.dumps({
                 "prompt": where + utterance,
@@ -465,14 +498,48 @@ class Receiver:
                 headers={"Authorization": f"Bearer {token}",
                          "Content-Type": "application/json"})
             try:
+                text = None
                 with urllib.request.urlopen(req, timeout=AGENT_TIMEOUT) as r:
-                    out = json.loads(r.read())
-                text = out.get("result") or out.get("error") or "the task finished"
+                    # NDJSON: one gemini event per line. The answer is whichever
+                    # object last carried a "response"; the rest is progress.
+                    for raw in r:
+                        if self._cancelled.is_set():
+                            break
+                        line = raw.decode("utf-8", "replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except ValueError:
+                            continue
+                        if not isinstance(ev, dict):
+                            continue
+                        # stream-json events: {type:init}, {type:message, role,
+                        # content, delta?}, {type:result, status}. The answer is
+                        # the assistant's message content — the user role echoes
+                        # the prompt back, so taking any message would report our
+                        # own instructions as the result. Deltas accumulate.
+                        if ev.get("type") == "message" and ev.get("role") == "assistant":
+                            chunk = ev.get("content") or ""
+                            text = (text or "") + chunk if ev.get("delta") else chunk
+                        elif ev.get("type") == "result" and ev.get("status") not in (None, "success"):
+                            text = text or f"the agent stopped: {ev.get('status')}"
+                if self._cancelled.is_set():
+                    _log("task stopped")
+                    self._say("Stopped.")
+                    return
+                text = text or "the task finished"
                 _log(f"task done: {json.dumps(text)[:160]}")
                 self._say(text)
             except Exception as e:
-                _log(f"task failed: {e}")
-                self._say(f"That didn't work: {e}")
+                if self._cancelled.is_set():
+                    _log("task stopped")
+                    self._say("Stopped.")
+                else:
+                    _log(f"task failed: {e}")
+                    self._say(f"That didn't work: {e}")
+            finally:
+                self._task_running = False
 
         threading.Thread(target=run, daemon=True).start()
         _log(f"task started: {utterance!r}")
