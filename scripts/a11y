@@ -192,17 +192,27 @@ restart_daemon() {
   # The daemon reads BU_CDP_URL once, at start. One left over from a previous
   # run is still attached to whatever Chrome it found then.
   pkill -f browser_harness.daemon >/dev/null 2>&1 && sleep 2
-  local out rc
-  out="$(cd "$A11Y" && bounded 30 ./browser-harness <<<'print(len(list_tabs(include_chrome=True)))' 2>&1)"; rc=$?
-  if [ "$rc" -eq 124 ]; then bad "harness could not reach Chrome within 30s"; info "see $LOGS/chrome.log"; return 1; fi
+  # Keep stdout and stderr apart. The harness prints an advisory "Allow remote
+  # debugging" line to stderr and then carries on succeeding, so matching the
+  # merged stream reported a failure for a call that worked — success has to be
+  # decided by the answer, not by whatever warnings accompanied it.
+  local out rc err
+  err="$(mktemp)"
+  out="$(cd "$A11Y" && bounded 30 ./browser-harness <<<'print(len(list_tabs(include_chrome=True)))' 2>"$err")"; rc=$?
+  if [ "$rc" -eq 124 ]; then
+    rm -f "$err"; bad "harness could not reach Chrome within 30s"; info "see $LOGS/chrome.log"; return 1
+  fi
   case "$out" in
-    *"Allow remote debugging"*|*permission-blocked*)
-      bad "Chrome is waiting on an \"Allow remote debugging?\" prompt"
-      info "click Allow in Chrome, then re-run — expected in attach mode"
-      return 1 ;;
-    *[0-9]*) ok "harness attached to Chrome"; return 0 ;;
-    *) bad "harness could not attach: $(printf '%s' "$out" | tail -1 | cut -c1-70)"; return 1 ;;
+    *[0-9]*) rm -f "$err"; ok "harness attached to Chrome"; return 0 ;;
   esac
+  if grep -qE "Allow remote debugging|permission-blocked" "$err" 2>/dev/null; then
+    rm -f "$err"
+    bad "Chrome is waiting on an \"Allow remote debugging?\" prompt"
+    info "click Allow in Chrome, then re-run — expected in attach mode"
+    return 1
+  fi
+  bad "harness could not attach: $(tail -1 "$err" 2>/dev/null | cut -c1-70)"
+  rm -f "$err"; return 1
 }
 
 # ── services ────────────────────────────────────────────────────────────────
