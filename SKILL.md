@@ -213,7 +213,10 @@ PY
   including video with no track at all. `a11y_sync()` switches Live Caption on
   for anyone whose profile asks for captions, and off again only if it was the
   one that switched it on — a setting the person made themselves is left alone.
-  It is a browser preference, so it outlives the tab and the session.
+  It is a browser preference, so it outlives the tab and the session. It can
+  also be asked for by name — `a11y_apply(liveCaptions=False)`, or
+  `liveCaptions` in a Controller settings request — and an explicit request
+  wins over the profile.
 - **Presets**: `blind`, `lowVision`, `colorBlind`, `deaf`, `motor`, `dyslexia`,
   `adhd`, `cognitive`, `olderAdult`, `anxiety`, `sensory`, `photosensitive`.
 - Settings needing an LLM (`autoDescribe`, `autoFixLabels`) report `needs-ai`
