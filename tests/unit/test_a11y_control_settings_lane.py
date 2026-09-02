@@ -348,3 +348,39 @@ def test_nothing_held_sends_nothing():
     ws = FakeSocket()
     assert asyncio.run(control.flush_notes(ws)) == 0
     assert ws.sent == []
+
+
+def test_a_page_answer_comes_back_as_a_note(monkeypatch):
+    """`ok: true` on a task means "started, the result follows" — the shape the
+    agent path returns before going away to work. Answering in the reply alone
+    left the chat waiting for a note that never came."""
+    r = control.Receiver.__new__(control.Receiver)
+    r._target, r._sid, r._persist_scope = "driven", "s1", None
+    notes = []
+    r._notify = notes.append
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control, "_log", lambda *a, **k: None)
+    monkeypatch.setattr(control.Receiver, "_ensure", lambda self: None)
+    monkeypatch.setattr(control.Receiver, "_answer_about_page",
+                        lambda self, kind: {"ok": True, "detail": "Apple. 38 sections: …"})
+
+    out = r.performAction("task", None, "what is on this page", {})
+
+    assert out == {"ok": True, "detail": "reading the page"}
+    assert notes == ["Apple. 38 sections: …"]
+
+
+def test_with_nobody_to_notify_the_answer_rides_the_reply(monkeypatch):
+    r = control.Receiver.__new__(control.Receiver)
+    r._target, r._sid, r._persist_scope = "driven", "s1", None
+    r._notify = None
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control, "_log", lambda *a, **k: None)
+    monkeypatch.setitem(control._TASK, "notify", None)
+    monkeypatch.setattr(control.Receiver, "_ensure", lambda self: None)
+    monkeypatch.setattr(control.Receiver, "_answer_about_page",
+                        lambda self, kind: {"ok": True, "detail": "the answer"})
+
+    out = r.performAction("task", None, "what is on this page", {})
+
+    assert out["detail"] == "the answer"

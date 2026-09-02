@@ -899,7 +899,21 @@ class Receiver:
         if actionId == "task" and IFRAME_HOST:
             asked = page_question(text or target or "")
             if asked:
-                return self._answer_about_page(asked)
+                answer = self._answer_about_page(asked)
+                if not answer.get("ok"):
+                    return answer
+                # As a note, not as this reply. `ok: true` on a task means
+                # "started, the result follows" — it is what the agent path
+                # returns before going away to work — so the Controller shows
+                # the acknowledgement and waits for a note. Answering in the
+                # reply alone left it waiting for one that never came, which is
+                # what a hang on the other machine looks like.
+                text_out = answer.get("detail") or ""
+                notify = self._notify or _TASK.get("notify")
+                if notify:
+                    notify(text_out)
+                    return {"ok": True, "detail": "reading the page"}
+                return {"ok": True, "detail": text_out}
             return {"ok": False,
                     "detail": "I can change settings, move around and read this "
                               "page, but I cannot run open-ended tasks while the "
