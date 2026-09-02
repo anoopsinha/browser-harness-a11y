@@ -24,9 +24,10 @@ python3 scripts/iframe-host/server.py    # http://127.0.0.1:8124/
 Expose **8124** through the Assistiv Labs tunnel alongside the chat's **4000**.
 Both are needed: the chat is one origin, the proxied page another.
 
-`/` is a test harness — a URL bar, adapter buttons and a result pane — useful on
-its own for checking an adapter against a real site before involving a screen
-reader.
+`/` is a bare frame with a URL bar, for checking that a page loads and its
+adapters came up before a screen reader is involved. It has no controls of its
+own — settings are the chat's job. The chat embeds `/go?url=…` directly in its
+own iframe and talks to the bridge; it does not need this page.
 
 ## What it does to a page
 

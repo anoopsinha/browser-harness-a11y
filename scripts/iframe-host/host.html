@@ -3,109 +3,52 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Framed page — control test</title>
+<title>Framed page</title>
 <style>
   :root { color-scheme: light dark; }
-  body { font: 15px/1.5 system-ui, sans-serif; margin: 0; display: grid;
-         grid-template-rows: auto 1fr; height: 100vh; }
-  header { padding: .6rem .8rem; border-bottom: 1px solid #8884; display: flex;
-           gap: .5rem; flex-wrap: wrap; align-items: center; }
-  input[type=url] { flex: 1 1 22rem; padding: .4rem .5rem; font: inherit; }
-  button { padding: .4rem .7rem; font: inherit; cursor: pointer; }
-  main { display: grid; grid-template-columns: 20rem 1fr; min-height: 0; }
-  #panel { border-right: 1px solid #8884; padding: .8rem; overflow: auto; }
-  #panel h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
-              margin: 1rem 0 .4rem; }
-  #panel h2:first-child { margin-top: 0; }
-  #log { font: 12px/1.45 ui-monospace, monospace; white-space: pre-wrap;
-         background: #8881; padding: .5rem; border-radius: 4px; }
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 0;
+         display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  header { display: flex; gap: .5rem; align-items: center;
+           padding: .5rem .7rem; border-bottom: 1px solid #8884; }
+  label { font-size: .85rem; }
+  input { flex: 1; padding: .4rem .5rem; font: inherit; }
+  #status { font: 12px ui-monospace, monospace; opacity: .7; white-space: nowrap; }
   iframe { width: 100%; height: 100%; border: 0; }
-  .row { display: flex; flex-wrap: wrap; gap: .3rem; margin-bottom: .5rem; }
 </style>
 </head>
 <body>
 <header>
-  <label for="url">Page to test</label>
+  <label for="url">Page</label>
   <input id="url" type="url" value="https://en.wikipedia.org/wiki/Apple">
-  <button id="load">Load</button>
+  <span id="status" role="status" aria-live="polite">loading…</span>
 </header>
-<main>
-  <div id="panel">
-    <h2>Adapters</h2>
-    <div class="row">
-      <button data-set='{"fontScale":150}'>Bigger text</button>
-      <button data-set='{"darkMode":true}'>Dark</button>
-      <button data-set='{"highlightLinks":true}'>Links</button>
-      <button data-set='{"readingRuler":true}'>Ruler</button>
-      <button data-set='{"fixLandmarks":true}'>Landmarks</button>
-    </div>
-    <h2>Read</h2>
-    <div class="row">
-      <button data-call="getContent" data-args='["outline"]'>Outline</button>
-      <button data-call="describeCapabilities">Capabilities</button>
-      <button data-call="getContext">Context</button>
-      <button data-call="undoLast">Undo</button>
-    </div>
-    <h2>Result</h2>
-    <div id="log" role="status" aria-live="polite">Load a page to begin.</div>
-  </div>
-  <iframe id="frame" title="Page under test"></iframe>
-</main>
+<iframe id="frame" title="Page under test"></iframe>
 
 <script>
+  // A way to check a page loads and its adapters came up, before a screen
+  // reader is involved. The settings themselves are the chat's job — this
+  // deliberately has no controls of its own.
   const frame = document.getElementById('frame');
-  const log = document.getElementById('log');
-  const say = (x) => { log.textContent = typeof x === 'string' ? x : JSON.stringify(x, null, 1); };
+  const url = document.getElementById('url');
+  const status = document.getElementById('status');
 
-  let seq = 0;
-  const pending = new Map();
-
-  // Same shape as a ControlPort call, so the chat can later swap this for a
-  // remote receiver without the calling code changing.
-  function call(method, ...args) {
-    return new Promise((resolve, reject) => {
-      const id = String(++seq);
-      pending.set(id, { resolve, reject });
-      frame.contentWindow.postMessage({ kind: 'bh-iframe-req', id, method, args }, '*');
-      setTimeout(() => {
-        if (pending.has(id)) { pending.delete(id); reject(new Error('timed out')); }
-      }, 8000);
-    });
+  function load(u) {
+    url.value = u;
+    status.textContent = 'loading…';
+    frame.src = '/go?url=' + encodeURIComponent(u);
   }
 
   addEventListener('message', (ev) => {
     const m = ev.data;
     if (!m) return;
-    if (m.kind === 'bh-iframe-ready') { say('ready: ' + m.title); return; }
-    if (m.kind === 'bh-iframe-navigate') { load(m.url); return; }
-    if (m.kind !== 'bh-iframe-res') return;
-    const p = pending.get(m.id);
-    if (!p) return;
-    pending.delete(m.id);
-    m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
+    // Navigation inside the frame has to come back through the proxy, or the
+    // next page arrives unadapted and framing headers apply to it again.
+    if (m.kind === 'bh-iframe-navigate') load(m.url);
+    if (m.kind === 'bh-iframe-ready') status.textContent = 'adapters ready';
   });
 
-  function load(url) {
-    document.getElementById('url').value = url;
-    frame.src = '/go?url=' + encodeURIComponent(url);
-    say('loading ' + url + ' …');
-  }
-
-  document.getElementById('load').onclick = () => load(document.getElementById('url').value);
-  document.getElementById('url').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') load(e.target.value);
-  });
-
-  document.getElementById('panel').addEventListener('click', async (e) => {
-    const b = e.target.closest('button');
-    if (!b) return;
-    try {
-      if (b.dataset.set) say(await call('applySettings', JSON.parse(b.dataset.set)));
-      else if (b.dataset.call) say(await call(b.dataset.call, ...JSON.parse(b.dataset.args || '[]')));
-    } catch (err) { say('error: ' + err.message); }
-  });
-
-  load(document.getElementById('url').value);
+  url.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(e.target.value); });
+  load(url.value);
 </script>
 </body>
 </html>
