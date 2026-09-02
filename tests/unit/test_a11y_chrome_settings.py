@@ -140,3 +140,57 @@ def test_the_single_flag_this_replaced_is_still_honoured(prefs_file):
 
     assert a11y._is_ours("liveCaptions")
     assert not a11y._is_ours("autoDescribe")
+
+
+# ---- autoDescribe from a profile ---------------------------------------
+# The only implementation of autoDescribe on this platform. Applying it through
+# the toolkit reports needs-ai and changes nothing, which is what a blind
+# person's profile used to do here.
+
+@pytest.fixture
+def follow_spy(monkeypatch):
+    calls = []
+
+    def fake(patience=10.0, **settings):
+        calls.append(settings)
+        return {k: {"state": "on" if v else "off", "changed": True}
+                for k, v in settings.items()}
+
+    monkeypatch.setattr(a11y, "a11y_chrome_apply", fake)
+    return calls
+
+
+def test_a_profile_asking_for_descriptions_reaches_chrome(follow_spy, prefs_file):
+    r = a11y._follow_browser({"autoDescribe": True})
+
+    assert {"autoDescribe": True} in follow_spy
+    assert r["autoDescribe"]["state"] == "on"
+
+
+def test_a_profile_that_does_not_ask_leaves_a_setting_we_do_not_own(follow_spy, prefs_file):
+    r = a11y._follow_browser({"fontScale": 150})
+
+    assert follow_spy == []
+    assert r["autoDescribe"] == {"state": "left alone"}
+
+
+def test_what_we_switched_on_is_switched_back_off(follow_spy, prefs_file):
+    a11y._claim("autoDescribe", True)
+
+    a11y._follow_browser({"fontScale": 150})
+
+    assert {"autoDescribe": False} in follow_spy
+
+
+def test_being_told_overrides_ownership(follow_spy, prefs_file):
+    """Not ours, but they asked — that is an instruction, not an inference."""
+    a11y._follow_browser({}, explicit=("autoDescribe",))
+
+    assert {"autoDescribe": False} in follow_spy
+
+
+def test_captions_and_descriptions_are_followed_independently(follow_spy, prefs_file):
+    r = a11y._follow_browser({"showCaptions": True, "autoDescribe": False})
+
+    assert {"liveCaptions": True} in follow_spy
+    assert r["autoDescribe"] == {"state": "left alone"}

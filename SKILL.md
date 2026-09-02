@@ -202,6 +202,7 @@ a11y_off()                    # turn everything off
 a11y_live_captions(True)      # Chrome's own Live Caption (browser-wide, persists)
 a11y_chrome_settings()        # what chrome://settings/accessibility offers, and its state
 a11y_chrome_apply(autoDescribe=True)   # set one there
+a11y_image_descriptions(True) # Chrome describes unlabelled images (autoDescribe)
 PY
 ```
 
@@ -219,6 +220,13 @@ PY
   also be asked for by name — `a11y_apply(liveCaptions=False)`, or
   `liveCaptions` in a Controller settings request — and an explicit request
   wins over the profile.
+- **`autoDescribe` is Chrome's, not the toolkit's.** The toolkit declares the
+  setting and reports `needs-ai`, holding no model; Chrome has one, so for
+  someone who cannot see an unlabelled image this toggle is the difference
+  between a description and silence. `a11y_sync()` follows it from the profile
+  alongside captions. The descriptions reach the accessibility tree — so a
+  screen reader and `a11y_snapshot()` see them — never the page markup. Chrome's
+  own wording: "To create descriptions, images are sent to Google."
 - **The browser has accessibility of its own.** A settings request the page
   cannot satisfy is asked of `chrome://settings/accessibility`: `autoDescribe`
   (Chrome describes unlabelled images with a real model, where the toolkit can

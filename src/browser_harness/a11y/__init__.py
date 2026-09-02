@@ -89,6 +89,15 @@ _BROWSER_PREFS_FILE = runtime_dir() / "a11y-browser-prefs.json"
 # video's own caption track — Chrome's Live Caption is what covers the rest.
 _WANTS_CAPTIONS = ("showCaptions", "autoCaptions")
 
+# Browser-level settings a profile can ask for, and the resolved settings that
+# mean the person wants them. Chrome is the only implementation of these: the
+# page-level catalog has no adapter for Live Caption, and the one it has for
+# autoDescribe cannot run without a model.
+_BROWSER_FROM_PROFILE = {
+    "liveCaptions": _WANTS_CAPTIONS,
+    "autoDescribe": ("autoDescribe",),
+}
+
 # What chrome://settings/accessibility offers, keyed by the setting name we
 # accept. The browser has accessibility of its own, and some of it no page-level
 # adapter can reach: Chrome will describe unlabelled images with a real model,
@@ -589,6 +598,55 @@ def a11y_service(method, *args, timeout=15.0):
     return body.get("result")
 
 
+def a11y_image_descriptions(on=True, patience=10.0):
+    """Switch Chrome's "Get image descriptions from Google" on or off.
+
+    This is the whole implementation of autoDescribe on this platform. The
+    toolkit declares the setting and then reports needs-ai, because it holds no
+    model — browser-harness deliberately holds none either. Chrome does, so for
+    someone who cannot see an unlabelled image this toggle is the difference
+    between a description and silence.
+
+    Chrome surfaces the descriptions through the accessibility tree rather than
+    the DOM, so they reach a screen reader — and a11y_snapshot() — but never
+    appear in the page's markup.
+
+    Worth saying plainly, because it is switched on from a person's profile:
+    Chrome's own wording is "To create descriptions, images are sent to Google."
+    """
+    r = a11y_chrome_apply(patience=patience, autoDescribe=bool(on)).get("autoDescribe", {})
+    out = {"image_descriptions": r.get("state", "not-found")}
+    for k in ("changed", "detail"):
+        if k in r:
+            out[k] = r[k]
+    return out
+
+
+def _follow_browser(settings, explicit=()):
+    """Bring Chrome's own accessibility settings in line with the profile.
+
+    The page adapters are only half of what a person's profile asks for. The
+    other half is browser-level and, for autoDescribe, is the only half there
+    is: applying it through the toolkit reports needs-ai and changes nothing,
+    which is what a blind person's profile used to do here.
+
+    `explicit` names settings the person asked about themselves. Following a
+    profile we undo only what we switched on — inferring that someone no longer
+    wants something is not licence to take away a setting they made for
+    themselves — but being told is not an inference.
+    """
+    out = {}
+    for name, wants in _BROWSER_FROM_PROFILE.items():
+        wanted = any(settings.get(k) for k in wants)
+        if wanted:
+            out[name] = a11y_chrome_apply(**{name: True}).get(name, {})
+        elif name in explicit or _is_ours(name):
+            out[name] = a11y_chrome_apply(**{name: False}).get(name, {})
+        else:
+            out[name] = {"state": "left alone"}
+    return out
+
+
 def _follow_captions(settings, explicit=False):
     """Keep Chrome's Live Caption in step with what the person asks for.
 
@@ -647,9 +705,9 @@ def a11y_sync(url=None):
     # Browser-level, so it is followed even when the page adapters have nothing
     # to do — and never allowed to take the rest of the profile down with it.
     try:
-        out["browser"] = _follow_captions(settings)
+        out["browser"] = _follow_browser(settings)
     except Exception as e:
-        out["browser"] = {"live_captions": "failed", "detail": str(e)}
+        out["browser"] = {"state": "failed", "detail": str(e)}
 
     if not settings:
         out["note"] = "no preferences or needs recorded for this person yet"
@@ -826,4 +884,5 @@ __all__ = [
     "a11y_status", "a11y_service", "a11y_sync", "a11y_snapshot", "a11y_audit",
     "a11y_sticky", "a11y_layout", "a11y_target", "a11y_live_captions",
     "a11y_chrome_settings", "a11y_chrome_apply",
+    "a11y_image_descriptions",
 ]
