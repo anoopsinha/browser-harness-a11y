@@ -52,6 +52,11 @@ AGENT_URL = os.environ.get("BH_AGENT_URL", "http://127.0.0.1:8787/stream")
 # they are separate documents, so driving a tab here moves nothing on the
 # tester's screen. Setting the shared URL moves both.
 IFRAME_HOST = (os.environ.get("BH_IFRAME_HOST") or "").rstrip("/")
+
+# Preferences are scoped by the page they are for, and at connect time the
+# session may not have opened one yet. The host's own address stands in: it asks
+# the Librarian for the general, un-scoped settings rather than none at all.
+STATE_URL_FALLBACK = IFRAME_HOST or "http://127.0.0.1"
 AGENT_CANCEL_URL = os.environ.get("BH_AGENT_CANCEL_URL", "http://127.0.0.1:8787/cancel")
 AGENT_TOKEN_FILE = os.environ.get(
     "BH_AGENT_TOKEN_FILE",
@@ -291,11 +296,33 @@ class Receiver:
             self._target = None
             return False
 
+    def _in_frame(self, expression):
+        """Run an expression inside the Framed page's iframe.
+
+        Everything the receiver evaluates belongs to the page under test, which
+        here is the frame — not the page holding it, and certainly not whichever
+        tab happened to be pinned. Same-origin, because the proxy serves both,
+        so the frame's own realm is reachable through its window; and `eval`
+        works there because the proxy strips the page's CSP on the way past.
+        """
+        tid = self._iframe_viewer()
+        if not tid:
+            raise RuntimeError("no viewer open on this machine — open the "
+                               f"Framed page ({IFRAME_HOST}/) in a tab here")
+        wrapped = "(function(){%s})()" % expression
+        return js("""(() => {
+            const f = document.getElementById('frame');
+            if (!f || !f.contentWindow) throw new Error('the Framed page has no frame');
+            return f.contentWindow.eval(%s);
+        })()""" % json.dumps(wrapped), target_id=tid)
+
     def _eval(self, expression, tries=4):
         """Evaluate in the driven tab, waiting out a renderer mid-relayout."""
         reacquired = False
         for attempt in range(tries):
             try:
+                if IFRAME_HOST:
+                    return self._in_frame(expression)
                 if self._target:
                     return js(expression, target_id=self._target)
                 return _js(expression)
@@ -337,6 +364,17 @@ class Receiver:
 
     def _ensure(self):
         """Attach the catalog to the driven tab when it is missing or stale."""
+        if IFRAME_HOST:
+            # The proxy already put the catalog in the framed page. Injecting
+            # from here would land in the tab, which in this mode is the page
+            # holding the frame — or worse, whatever else was pinned.
+            # `!!`, not `typeof`: typeof answers with the string "undefined",
+            # which is perfectly truthy on this side of the wire, so the guard
+            # never fired and a page without adapters looked fine.
+            if not self._eval("return !!globalThis.__BH_A11Y"):
+                raise RuntimeError("the framed page has no adapters — is it being "
+                                   "served through the iframe host?")
+            return
         if self._eval("return globalThis.__BH_A11Y_BUILD || null") == _build_id(_bundle_source()):
             return
         sid = self._session()
@@ -370,17 +408,6 @@ class Receiver:
         return None
 
     def _capabilities(self):
-        if IFRAME_HOST:
-            caps = self._iframe_call("describeCapabilities")
-            if isinstance(caps, dict) and "error" not in caps:
-                caps["platform"] = "browser-harness-iframe"
-                caps["actions"] = [a for a in self._actions()
-                                   if a not in ("muteAudio",)]
-                return caps
-            # No viewer yet — say what this mode can do rather than nothing.
-            return {"platform": "browser-harness-iframe", "settingKeys": [],
-                    "actions": self._actions(), "canReadContent": True,
-                    "targets": [], "detail": (caps or {}).get("error")}
         self._ensure()
         return {
             "platform": "browser-harness-iframe" if IFRAME_HOST else "browser-harness",
@@ -404,12 +431,6 @@ class Receiver:
         return self._capabilities()
 
     def getContext(self):
-        if IFRAME_HOST:
-            ctx = self._iframe_call("getContext")
-            if isinstance(ctx, dict) and "error" not in ctx:
-                ctx["capabilities"] = {**(ctx.get("capabilities") or {}),
-                                       "platform": "browser-harness-iframe"}
-            return ctx
         self._ensure()
         title = (self._eval("return document.title") or "").lstrip("\U0001F434 ").strip()
         return {
@@ -558,12 +579,32 @@ class Receiver:
         return {"ok": True}
 
     def getContent(self, mode="outline", chunk=0):
-        if IFRAME_HOST:
-            return self._iframe_call("getContent", mode, int(chunk or 0))
         self._ensure()
         mode = "text" if mode == "text" else "outline"
         return self._eval("return globalThis.__BH_A11Y.content(%s, %d)"
                           % (json.dumps(mode), int(chunk or 0)))
+
+    def syncProfileToSession(self):
+        """Resolve this person's settings and hand them to every viewer.
+
+        The tab path applies the profile to a document. Here there is no single
+        document that matters: each viewer holds its own copy of the page, so
+        the profile becomes part of the session and every viewer applies it.
+        """
+        prefs = a11y_service("effectivePreferences", STATE_URL_FALLBACK) or {}
+        settings = dict((prefs.get("settings") or {}))
+        try:
+            model = a11y_service("getAbilityModel")
+        except Exception:
+            model = None
+        if model:
+            resolved = self._in_frame(
+                "return globalThis.__BH_A11Y.resolveWeb(%s, %s)"
+                % (json.dumps(prefs), json.dumps(model))) or {}
+            settings = resolved.get("settings") or settings
+        if settings:
+            self._iframe_post({"settings": settings})
+        return {"settings": settings}
 
     def _iframe_post(self, body):
         req = urllib.request.Request(
@@ -986,14 +1027,28 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
         _TASK["notify"] = notify
         if sync_on_connect:
             try:
-                await asyncio.to_thread(a11y_target, target)
-                r = await asyncio.to_thread(a11y_sync)
+                if IFRAME_HOST:
+                    # The profile becomes session state, like everything else in
+                    # this mode. Applying it to a tab would adapt whatever was
+                    # pinned — often the hosting service's own page — and would
+                    # reach nobody, since the person is reading elsewhere.
+                    r = await asyncio.to_thread(receiver.syncProfileToSession)
+                    _log(f"profile from {SERVICE_URL} -> session: "
+                         f"{list(r.get('settings') or {}) or 'none recorded'}")
+                    r = None
+                else:
+                    await asyncio.to_thread(a11y_target, target)
+                    r = await asyncio.to_thread(a11y_sync)
+                if r is None:
+                    raise StopIteration
                 # The browser-level part is logged too: it is the only place a
                 # failure to follow the profile into Chrome's own settings would
                 # otherwise be visible.
                 _log(f"profile from {SERVICE_URL}: "
                      f"{list(r.get('settings') or {}) or 'none recorded'}"
                      f" | browser: {json.dumps(r.get('browser'))}")
+            except StopIteration:
+                pass          # iframe mode logged its own line above
             except Exception as e:
                 _log(f"profile unavailable: {e}")
         try:

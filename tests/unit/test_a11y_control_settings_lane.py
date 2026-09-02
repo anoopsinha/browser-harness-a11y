@@ -13,6 +13,10 @@ import pytest
 from browser_harness.a11y import control
 from browser_harness.a11y.control import browser_setting_request as recognise
 
+# Captured before any fixture stubs it out, for the two tests that are about
+# _ensure itself rather than about a method that happens to call it.
+REAL_ENSURE = control.Receiver._ensure
+
 
 @pytest.mark.parametrize("utterance,expected", [
     ("turn off live captioning", ("liveCaptions", False)),   # the reported miss
@@ -193,3 +197,43 @@ def test_no_viewer_says_what_to_open(receiver, monkeypatch):
     r = receiver._iframe_call("getContent", "outline")
 
     assert "Framed page" in r["error"]
+
+
+def test_evaluation_goes_into_the_frame_never_the_pinned_tab(receiver, monkeypatch):
+    """The pinned tab in this mode is whatever was open — often the hosting
+    service's own page. Everything the receiver evaluates belongs to the page
+    under test, which is the frame."""
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    receiver._target = "assistivlabs-tab"
+    monkeypatch.setattr(control.Receiver, "_iframe_viewer", lambda self: "framed-page")
+    seen = {}
+
+    def fake_js(expression, target_id=None):
+        seen["target"] = target_id
+        seen["expr"] = expression
+        return "ok"
+
+    monkeypatch.setattr(control, "js", fake_js)
+
+    assert receiver._eval("return document.title") == "ok"
+    assert seen["target"] == "framed-page"          # not the pinned tab
+    assert "contentWindow.eval" in seen["expr"]     # and inside its frame
+
+
+def test_the_catalog_is_never_injected_into_a_tab_in_iframe_mode(receiver, monkeypatch):
+    """The proxy already put it in the framed page; injecting from here would
+    land in whatever tab was pinned."""
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_eval", lambda self, e: True)
+    monkeypatch.setattr(control, "cdp",
+                        lambda *a, **k: pytest.fail("must not inject into a tab"))
+
+    REAL_ENSURE(receiver)  # returns without injecting
+
+
+def test_a_framed_page_without_adapters_says_so(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_eval", lambda self, e: False)
+
+    with pytest.raises(RuntimeError, match="no adapters"):
+        REAL_ENSURE(receiver)

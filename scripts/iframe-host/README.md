@@ -82,7 +82,14 @@ BH_IFRAME_HOST=http://127.0.0.1:8124 ./browser-harness control --port 9333
 ```
 
 `describeCapabilities` then reports `platform: browser-harness-iframe`, so the
-Controller can tell which surface it is driving. In that mode the receiver
+Controller can tell which surface it is driving.
+
+In that mode the receiver never touches a tab. Everything it evaluates runs
+inside the Framed page's iframe, which matters because the tab it was pinned to
+is usually something else entirely — the hosting service's own page, in a
+session driven from Assistiv Labs. It finds the Framed page by a marker the page
+sets rather than by URL, since the same server is `localhost`, `127.0.0.1`, and
+something else again through a tunnel. In that mode the receiver
 broadcasts writes — settings, navigation, activate and scroll — through the host,
 and answers reads from a viewer open on this machine, since every viewer renders
 the same page with the same settings.
