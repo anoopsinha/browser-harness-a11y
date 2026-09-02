@@ -1013,7 +1013,13 @@ class Receiver:
                 f"curl -s -X POST {IFRAME_HOST}/state "
                 f"-H 'Content-Type: application/json' "
                 f"-d '{{\"url\":\"https://example.com\"}}' — then re-read the "
-                f"frame. Never navigate the holder page itself. ")
+                f"frame. Never navigate the holder page itself. "
+                # The agent reaches for Google unprompted, and Google is one of
+                # the pages that blanks itself once it sees it is framed: a real
+                # title over an empty body, which reads as the tool being broken.
+                f"To search, use Bing — https://www.bing.com/search?q=... — and "
+                f"NOT Google or DuckDuckGo, which return an empty page inside a "
+                f"frame. ")
         elif self._target:
             try:
                 url = self._eval("return location.href")

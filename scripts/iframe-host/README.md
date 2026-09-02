@@ -138,6 +138,10 @@ Asking for one of the others by name gets Bing and is told why, rather than an
 empty results page and no explanation. On a tab nothing changes: Google stays
 the default.
 
+The agent is told the same thing, and needs to be: the Controller's grammar does
+not match every phrasing, so "search for oranges" arrives as an open-ended task
+rather than a search — and left to itself the agent reaches for Google.
+
 ### What this mode will not do
 
 `liveCaptions`, `autoDescribe` and the other Chrome-level settings are out of

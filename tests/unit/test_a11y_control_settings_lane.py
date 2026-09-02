@@ -379,6 +379,8 @@ def test_the_agent_is_told_to_navigate_through_the_host(receiver, monkeypatch):
     assert "iframe on http://127.0.0.1:8124/" in body
     assert "/state" in body and "do NOT call" in body
     assert "switch_tab('viewer-tab')" in body
+    # It reaches for Google unprompted, and Google blanks itself in a frame.
+    assert "bing.com/search" in body and "NOT Google" in body
 
 
 # ---- which engine can survive being framed -------------------------------
