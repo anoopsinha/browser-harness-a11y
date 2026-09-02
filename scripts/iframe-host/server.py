@@ -45,17 +45,32 @@ BUNDLE = HERE.parent.parent / "src" / "browser_harness" / "a11y" / "bundle.js"
 # machine moves nothing on the tester's screen. Keeping the current URL on the
 # server — and pushing changes — is what makes "open this page" mean the same
 # thing to both of them.
-STATE = {"url": "https://en.wikipedia.org/wiki/Apple", "rev": 0}
+STATE = {"url": "https://en.wikipedia.org/wiki/Apple", "settings": {}, "rev": 0}
 STATE_LOCK = threading.Lock()
 LISTENERS = []          # open text/event-stream responses
 LISTENERS_LOCK = threading.Lock()
 
 
-def set_url(url):
+def update(url=None, settings=None, action=None):
+    """Change the session and tell every viewer.
+
+    Settings travel the same way the URL does, and for the same reason: the
+    person reading is on another machine, so an adapter applied to a document
+    here reaches nobody. Each viewer applies them to its own frame.
+    """
     with STATE_LOCK:
-        STATE["url"] = url
+        if url:
+            STATE["url"] = url
+            # Settings survive a navigation. Someone who asked for bigger text
+            # wants it on the next page too — which is what the sticky adapters
+            # do on a tab, and the session should not quietly differ.
+        if settings:
+            STATE["settings"] = {**STATE["settings"], **settings}
         STATE["rev"] += 1
         payload = dict(STATE)
+    if action:
+        # Not part of the state — a thing to do once, not a fact to hold.
+        payload = {**payload, "action": action}
     line = ("data: " + json.dumps(payload) + "\n\n").encode()
     with LISTENERS_LOCK:
         for w in list(LISTENERS):
@@ -168,15 +183,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error(404)
         n = int(self.headers.get("Content-Length") or 0)
         try:
-            url = (json.loads(self.rfile.read(n) or b"{}") or {}).get("url", "")
+            body = json.loads(self.rfile.read(n) or b"{}") or {}
         except ValueError:
             return self._send(400, json.dumps({"error": "bad json"}), "application/json")
-        url = (url or "").strip()
-        if not url:
-            return self._send(400, json.dumps({"error": "no url"}), "application/json")
-        if not url.startswith(("http://", "https://")):
+        url = (body.get("url") or "").strip()
+        settings = body.get("settings")
+        action = body.get("action")
+        if url and not url.startswith(("http://", "https://")):
             url = "https://" + url
-        return self._send(200, json.dumps(set_url(url)), "application/json")
+        if not (url or settings or action):
+            return self._send(400, json.dumps({"error": "nothing to change"}),
+                              "application/json")
+        return self._send(200, json.dumps(update(url or None, settings, action)),
+                          "application/json")
 
     def events(self):
         """Server-sent events: one line per navigation, to every viewer."""

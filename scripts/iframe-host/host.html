@@ -36,20 +36,34 @@
   const frame = document.getElementById('frame');
   const url = document.getElementById('url');
   const status = document.getElementById('status');
-  let shownRev = -1;
+  // What the frame is actually showing, which is not the same as what the box
+  // says: the box starts with a URL in it, so comparing against that skipped
+  // the very first load and left an empty frame.
+  let loadedUrl = null, wanted = {}, ready = false, seq = 0;
 
-  function show(state) {
-    if (state.rev === shownRev) return;
-    shownRev = state.rev;
-    url.value = state.url;
-    status.textContent = 'loading…';
-    frame.src = '/go?url=' + encodeURIComponent(state.url);
+  function toFrame(method, ...args) {
+    if (!ready) return;
+    frame.contentWindow.postMessage(
+      { kind: 'bh-iframe-req', id: 'h' + (++seq), method, args }, '*');
   }
 
-  function request(u) {
-    // Ask the server; the answer comes back through the stream, to everyone.
+  function show(state) {
+    if (state.action) toFrame('performAction', state.action.id, state.action.target);
+    wanted = state.settings || {};
+    if (state.url !== loadedUrl) {
+      loadedUrl = state.url;
+      url.value = state.url;
+      status.textContent = 'loading…';
+      ready = false;
+      frame.src = '/go?url=' + encodeURIComponent(state.url);
+      return;                       // settings are applied once it says it is ready
+    }
+    if (Object.keys(wanted).length) toFrame('applySettings', wanted);
+  }
+
+  function request(body) {
     fetch('/state', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ url: u }) })
+                      body: JSON.stringify(body) })
       .catch(() => { status.textContent = 'could not reach the host'; });
   }
 
@@ -60,11 +74,18 @@
     if (!m) return;
     // A link followed inside the frame becomes a navigation for every viewer,
     // and comes back through the proxy so the next page is adapted too.
-    if (m.kind === 'bh-iframe-navigate') request(m.url);
-    if (m.kind === 'bh-iframe-ready') status.textContent = 'adapters ready';
+    if (m.kind === 'bh-iframe-navigate') request({ url: m.url });
+    if (m.kind === 'bh-iframe-ready') {
+      ready = true;
+      status.textContent = 'adapters ready';
+      // The page has only just loaded, so whatever the session already asked
+      // for has to be applied to it now — the state change that carried those
+      // settings arrived before this document existed.
+      if (Object.keys(wanted).length) toFrame('applySettings', wanted);
+    }
   });
 
-  url.addEventListener('keydown', (e) => { if (e.key === 'Enter') request(e.target.value); });
+  url.addEventListener('keydown', (e) => { if (e.key === 'Enter') request({ url: e.target.value }); });
 </script>
 </body>
 </html>

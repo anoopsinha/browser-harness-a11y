@@ -65,15 +65,27 @@ curl -X POST localhost:8124/state -H 'Content-Type: application/json' \
 host page listens to. Verified with two viewers open at once: a POST from a third
 party moved both.
 
-Point the receiver at it so navigation goes the same way rather than driving a
-tab:
+Settings travel the same way, and for the same reason — an adapter applied to a
+document on this machine reaches nobody. Each viewer applies the session's
+settings to its own frame, including after a navigation, so bigger text stays
+bigger on the next page.
+
+```bash
+curl -X POST localhost:8124/state -H 'Content-Type: application/json' \
+     -d '{"settings":{"fontScale":150}}'
+```
+
+Point the receiver at it so the chat drives the frame rather than a tab:
 
 ```bash
 BH_IFRAME_HOST=http://127.0.0.1:8124 ./browser-harness control --port 9333
 ```
 
 `describeCapabilities` then reports `platform: browser-harness-iframe`, so the
-Controller can tell which surface it is driving.
+Controller can tell which surface it is driving. In that mode the receiver
+broadcasts writes — settings, navigation, activate and scroll — through the host,
+and answers reads from a viewer open on this machine, since every viewer renders
+the same page with the same settings.
 
 ## Driving it
 

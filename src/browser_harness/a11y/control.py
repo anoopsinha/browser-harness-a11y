@@ -370,6 +370,17 @@ class Receiver:
         return None
 
     def _capabilities(self):
+        if IFRAME_HOST:
+            caps = self._iframe_call("describeCapabilities")
+            if isinstance(caps, dict) and "error" not in caps:
+                caps["platform"] = "browser-harness-iframe"
+                caps["actions"] = [a for a in self._actions()
+                                   if a not in ("muteAudio",)]
+                return caps
+            # No viewer yet — say what this mode can do rather than nothing.
+            return {"platform": "browser-harness-iframe", "settingKeys": [],
+                    "actions": self._actions(), "canReadContent": True,
+                    "targets": [], "detail": (caps or {}).get("error")}
         self._ensure()
         return {
             "platform": "browser-harness-iframe" if IFRAME_HOST else "browser-harness",
@@ -393,6 +404,12 @@ class Receiver:
         return self._capabilities()
 
     def getContext(self):
+        if IFRAME_HOST:
+            ctx = self._iframe_call("getContext")
+            if isinstance(ctx, dict) and "error" not in ctx:
+                ctx["capabilities"] = {**(ctx.get("capabilities") or {}),
+                                       "platform": "browser-harness-iframe"}
+            return ctx
         self._ensure()
         title = (self._eval("return document.title") or "").lstrip("\U0001F434 ").strip()
         return {
@@ -418,6 +435,8 @@ class Receiver:
             _log(f"not persisted: {e}")
 
     def applySettings(self, changes, scope=None):
+        if IFRAME_HOST:
+            return self._apply_iframe(changes, scope)
         self._ensure()
         if not isinstance(changes, dict) or not changes:
             return {"error": "no settings given"}
@@ -539,10 +558,71 @@ class Receiver:
         return {"ok": True}
 
     def getContent(self, mode="outline", chunk=0):
+        if IFRAME_HOST:
+            return self._iframe_call("getContent", mode, int(chunk or 0))
         self._ensure()
         mode = "text" if mode == "text" else "outline"
         return self._eval("return globalThis.__BH_A11Y.content(%s, %d)"
                           % (json.dumps(mode), int(chunk or 0)))
+
+    def _iframe_post(self, body):
+        req = urllib.request.Request(
+            IFRAME_HOST + "/state", data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read() or b"{}") or {}
+
+    def _iframe_viewer(self):
+        """A tab on this machine showing the host page, used only for reading.
+
+        Every viewer renders the same URL with the same settings, so the content
+        is the same wherever it is read. Writes still go through the host, or
+        they would land on this copy alone — which is the one nobody is looking
+        at.
+        """
+        for t in list_tabs(include_chrome=False):
+            if (t.get("url") or "").startswith(IFRAME_HOST):
+                return t.get("targetId")
+        return None
+
+    def _iframe_call(self, method, *args):
+        """Call the bridge inside the local viewer's frame."""
+        tid = self._iframe_viewer()
+        if not tid:
+            return {"error": f"no viewer open — load {IFRAME_HOST}/ in a tab here"}
+        return js("""(() => new Promise((res) => {
+            const f = document.getElementById('frame');
+            if (!f || !f.contentWindow) return res({error: 'no frame'});
+            const id = 'r' + Math.random().toString(36).slice(2);
+            const t = setTimeout(() => res({error: 'the frame did not answer'}), 6000);
+            addEventListener('message', function h(e) {
+              if (!e.data || e.data.kind !== 'bh-iframe-res' || e.data.id !== id) return;
+              removeEventListener('message', h); clearTimeout(t);
+              res(e.data.error ? {error: e.data.error} : e.data.result);
+            });
+            f.contentWindow.postMessage({kind: 'bh-iframe-req', id,
+              method: %s, args: %s}, '*');
+        }))()""" % (json.dumps(method), json.dumps(list(args))), target_id=tid)
+
+    def _apply_iframe(self, changes, scope=None):
+        """Broadcast settings to every viewer, rather than adapting a document here.
+
+        Applying them locally is what the tab path does, and in this mode that
+        document is on the wrong machine — the adapters would run where nobody
+        is reading. The host holds them and each viewer applies them to its own
+        frame.
+        """
+        if not isinstance(changes, dict) or not changes:
+            return {"error": "no settings given"}
+        try:
+            state = self._iframe_post({"settings": changes})
+        except Exception as e:
+            return {"error": f"could not reach the iframe host at {IFRAME_HOST} — {e}"}
+        _log(f"iframe host settings {json.dumps(changes)} (rev {state.get('rev')})")
+        # Stated through the Controller, so it is a preference like any other.
+        self._record(changes, scope)
+        return {"applied": changes, "previous": {}, "rejected": [],
+                "session": {"rev": state.get("rev"), "viewers": "all"}}
 
     def _navigate_iframe(self, url):
         """Point every viewer's frame at a page, by asking the host to move.
@@ -552,12 +632,7 @@ class Receiver:
         thing both copies share is the server.
         """
         try:
-            req = urllib.request.Request(
-                IFRAME_HOST + "/state",
-                data=json.dumps({"url": url}).encode(),
-                headers={"Content-Type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=10) as r:
-                rev = (json.loads(r.read() or b"{}") or {}).get("rev")
+            rev = self._iframe_post({"url": url}).get("rev")
             _log(f"iframe host -> {url} (rev {rev})")
             return {"ok": True, "detail": f"opening {url}"}
         except Exception as e:
@@ -676,6 +751,13 @@ class Receiver:
             # page the task acted on.
             self._return_to_controller = (meta or {}).get("returnToController", True)
             return self._task(utterance)
+
+        if IFRAME_HOST and actionId in ("activate", "scroll", "back", "forward"):
+            try:
+                self._iframe_post({"action": {"id": actionId, "target": target}})
+            except Exception as e:
+                return {"ok": False, "detail": f"could not reach the iframe host — {e}"}
+            return {"ok": True, "detail": f"{actionId} {target or ''}".strip()}
 
         if actionId in ("back", "forward"):
             self._eval(f"history.{actionId}(); return 1")
