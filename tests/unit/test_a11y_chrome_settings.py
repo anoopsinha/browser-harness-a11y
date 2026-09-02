@@ -44,8 +44,9 @@ def page_does(monkeypatch, applied_keys, skipped_keys=()):
 def chrome_answers(monkeypatch, states):
     seen = {}
 
-    def fake(patience=10.0, **settings):
+    def fake(patience=10.0, said=False, **settings):
         seen.update(settings)
+        seen["_said"] = said
         return {k: {"state": "on" if states.get(k, settings[k]) else "off", "changed": True}
                 for k in settings}
 
@@ -61,7 +62,7 @@ def test_a_setting_the_page_cannot_do_is_asked_of_the_browser(receiver, monkeypa
 
     r = receiver.applySettings({"autoDescribe": True})
 
-    assert seen == {"autoDescribe": True}
+    assert seen == {"autoDescribe": True, "_said": True}  # they named it
     assert r["applied"] == {"autoDescribe": True}
     assert "autoDescribe" not in r["rejected"]
     assert r["chrome"]["autoDescribe"]["state"] == "on"
@@ -75,7 +76,7 @@ def test_turning_one_off_reaches_the_browser_too(receiver, monkeypatch):
 
     r = receiver.applySettings({"caretBrowsing": False})
 
-    assert seen == {"caretBrowsing": False}
+    assert seen == {"caretBrowsing": False, "_said": True}
     assert r["applied"] == {"caretBrowsing": False}
 
 
@@ -151,7 +152,7 @@ def test_the_single_flag_this_replaced_is_still_honoured(prefs_file):
 def follow_spy(monkeypatch):
     calls = []
 
-    def fake(patience=10.0, **settings):
+    def fake(patience=10.0, said=False, **settings):
         calls.append(settings)
         return {k: {"state": "on" if v else "off", "changed": True}
                 for k, v in settings.items()}
@@ -194,3 +195,55 @@ def test_captions_and_descriptions_are_followed_independently(follow_spy, prefs_
 
     assert {"liveCaptions": True} in follow_spy
     assert r["autoDescribe"] == {"state": "left alone"}
+
+
+# ---- what they said outlives what the profile implies -------------------
+# "turn off live captions" switched Chrome off, and the next profile sync — one
+# per chat reconnect — derived liveCaptions from the hearing profile and switched
+# it straight back on. The person is told it is off, and it is not.
+
+def test_an_explicit_choice_survives_the_next_profile_sync(follow_spy, prefs_file):
+    a11y._remember_said("liveCaptions", False)
+
+    r = a11y._follow_browser({"showCaptions": True, "autoCaptions": True})
+
+    assert {"liveCaptions": True} not in follow_spy
+    assert r["liveCaptions"]["state"] == "off"
+
+
+def test_asking_for_it_again_puts_it_back(follow_spy, prefs_file):
+    a11y._remember_said("liveCaptions", False)
+    a11y._remember_said("liveCaptions", True)
+
+    a11y._follow_browser({"showCaptions": True})
+
+    assert {"liveCaptions": True} in follow_spy
+
+
+def test_a_profile_still_drives_a_setting_they_never_mentioned(follow_spy, prefs_file):
+    a11y._remember_said("liveCaptions", False)
+
+    a11y._follow_browser({"showCaptions": True, "autoDescribe": True})
+
+    assert {"autoDescribe": True} in follow_spy
+
+
+def test_only_a_named_request_is_remembered(prefs_file, monkeypatch):
+    """A setting the profile merely implied is not a decision they made."""
+    monkeypatch.setattr(a11y, "_settings_tab", lambda: __import__("contextlib").nullcontext("t"))
+    monkeypatch.setattr(a11y, "_set_toggle", lambda tid, label, want, patience: ("on", False))
+
+    a11y.a11y_chrome_apply(liveCaptions=True)
+    assert a11y._was_said("liveCaptions") is None
+
+    a11y.a11y_chrome_apply(said=True, liveCaptions=True)
+    assert a11y._was_said("liveCaptions") is True
+
+
+def test_claiming_a_setting_does_not_forget_what_was_said(prefs_file):
+    """_claim used to rewrite the whole file."""
+    a11y._remember_said("liveCaptions", False)
+    a11y._claim("autoDescribe", True)
+
+    assert a11y._was_said("liveCaptions") is False
+    assert a11y._is_ours("autoDescribe")

@@ -213,7 +213,9 @@ def _claim(name, ours):
         owned[name] = True
     else:
         owned.pop(name, None)
-    _BROWSER_PREFS_FILE.write_text(json.dumps({"ours": owned}))
+    prefs["ours"] = owned
+    prefs.pop("live_captions_ours", None)  # folded into `ours` above
+    _BROWSER_PREFS_FILE.write_text(json.dumps(prefs))
 
 
 def _is_ours(name):
@@ -222,6 +224,24 @@ def _is_ours(name):
     if isinstance(owned, dict):
         return bool(owned.get(name))
     return name == "liveCaptions" and bool(prefs.get("live_captions_ours"))
+
+
+def _remember_said(name, want):
+    """Record a browser-level setting the person asked for by name.
+
+    Without this, an explicit choice loses to an inferred one: "turn off live
+    captions" switched Chrome off, and the next profile sync — every time the
+    chat reconnects — derived liveCaptions from the hearing profile again and
+    switched it straight back on. The person is told it is off, and it is not.
+    """
+    prefs = _browser_prefs()
+    prefs["said"] = {**(prefs.get("said") or {}), name: bool(want)}
+    _BROWSER_PREFS_FILE.write_text(json.dumps(prefs))
+
+
+def _was_said(name):
+    """What they last asked for by name, or None if they never have."""
+    return (_browser_prefs().get("said") or {}).get(name)
 
 
 def _find_toggle_js(label):
@@ -336,7 +356,7 @@ def a11y_chrome_settings():
     return out
 
 
-def a11y_chrome_apply(patience=10.0, **settings):
+def a11y_chrome_apply(patience=10.0, said=False, **settings):
     """Set browser-level accessibility settings on the Chrome settings page.
 
     Chrome exposes no CDP surface for its preferences, so these are driven the
@@ -348,6 +368,8 @@ def a11y_chrome_apply(patience=10.0, **settings):
     person's own profile — so we record which ones we switched on, and undo only
     those. See _BROWSER_PREFS_FILE.
     """
+    # `said` marks a request the person made by name, as opposed to one
+    # inferred from their profile. Only the former is remembered as a decision.
     unknown = [k for k in settings if k not in _CHROME_CONTROLS]
     todo = {k: v for k, v in settings.items() if k in _CHROME_CONTROLS}
     out = {"unsupported": unknown} if unknown else {}
@@ -376,6 +398,8 @@ def a11y_chrome_apply(patience=10.0, **settings):
                 _claim(name, True)
             elif not want:
                 _claim(name, False)
+            if said:
+                _remember_said(name, want)
             out[name] = {"state": state, "changed": was != want}
     return out
 
@@ -637,8 +661,15 @@ def _follow_browser(settings, explicit=()):
     """
     out = {}
     for name, wants in _BROWSER_FROM_PROFILE.items():
-        wanted = any(settings.get(k) for k in wants)
-        if wanted:
+        # What they asked for by name outlives what the profile implies, and is
+        # enforced rather than merely not overridden. The profile says this
+        # person reads rather than hears; it does not say they want Chrome
+        # captioning right now, and they have just said they do not.
+        said = _was_said(name)
+        if said is not None:
+            out[name] = a11y_chrome_apply(**{name: said}).get(name, {})
+            continue
+        if any(settings.get(k) for k in wants):
             out[name] = a11y_chrome_apply(**{name: True}).get(name, {})
         elif name in explicit or _is_ours(name):
             out[name] = a11y_chrome_apply(**{name: False}).get(name, {})
@@ -661,8 +692,12 @@ def _follow_captions(settings, explicit=False):
     """
     wanted = any(settings.get(k) for k in _WANTS_CAPTIONS)
     if wanted:
+        if explicit:
+            _remember_said("liveCaptions", True)
         return a11y_live_captions(True)
     if explicit or _is_ours("liveCaptions"):
+        if explicit:
+            _remember_said("liveCaptions", False)
         return a11y_live_captions(False)
     return {"live_captions": "left alone"}
 

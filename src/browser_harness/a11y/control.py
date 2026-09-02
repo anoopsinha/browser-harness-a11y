@@ -29,8 +29,8 @@ from pathlib import Path
 
 from . import (SERVICE_URL, _CHROME_CONTROLS, _WANTS_CAPTIONS, _build_id,
                _bundle_source, _follow_captions, _guarded, _js,
-               a11y_chrome_apply, a11y_live_captions, a11y_service,
-               a11y_sync, a11y_target)
+               _remember_said, a11y_chrome_apply, a11y_live_captions,
+               a11y_service, a11y_sync, a11y_target)
 from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
@@ -408,6 +408,8 @@ class Receiver:
         browser = None
         if asked is not None:
             browser = a11y_live_captions(bool(asked))
+            # Named by the person, so it outlives the profile's inference.
+            _remember_said("liveCaptions", bool(asked))
             if not changes:
                 return {"applied": {"liveCaptions": bool(asked)}, "previous": {},
                         "rejected": [], "browser": browser}
@@ -447,7 +449,7 @@ class Receiver:
                     if k in _CHROME_CONTROLS and k not in applied}
         if fallback:
             try:
-                for key, r in a11y_chrome_apply(**fallback).items():
+                for key, r in a11y_chrome_apply(said=True, **fallback).items():
                     if key == "unsupported":
                         continue
                     if r.get("state") in ("on", "off") and (r["state"] == "on") == bool(changes[key]):
@@ -619,7 +621,7 @@ class Receiver:
             hit = browser_setting_request(utterance)
             if hit:
                 name, want = hit
-                r = a11y_chrome_apply(**{name: want}).get(name, {})
+                r = a11y_chrome_apply(said=True, **{name: want}).get(name, {})
                 state, label = r.get("state"), _CHROME_CONTROLS[name]
                 _log(f"answered {utterance.strip()!r} directly: {name} -> {state}")
                 if state in ("on", "off") and (state == "on") == want:

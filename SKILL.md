@@ -233,6 +233,10 @@ PY
   only report `needs-ai`), `caretBrowsing`, `focusHighlight`, `hideProfanity`,
   `liveTranslate`, `liveCaptions`. Only what the page could not do — these are
   browser-wide and persist, so one a page adapter already handled is left alone.
+  A browser setting asked for **by name** is remembered and re-asserted on every
+  profile sync: otherwise "turn off live captions" is undone by the next sync,
+  which re-derives it from a profile that still says captions. Saying the
+  opposite replaces the decision.
 - **Presets**: `blind`, `lowVision`, `colorBlind`, `deaf`, `motor`, `dyslexia`,
   `adhd`, `cognitive`, `olderAdult`, `anxiety`, `sensory`, `photosensitive`.
 - Settings needing an LLM (`autoDescribe`, `autoFixLabels`) report `needs-ai`
