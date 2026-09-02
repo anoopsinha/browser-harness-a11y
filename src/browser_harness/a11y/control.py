@@ -1156,32 +1156,33 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
         _TASK["notify"] = notify
 
         await flush_notes(ws)
-        if sync_on_connect:
+        # Never before _handle. This runs on the connection's own coroutine, so
+        # anything slow here — the profile service, a frame mid-load — happens
+        # while the chat's requests sit unread, and the chat simply hangs. In
+        # iframe mode there is nothing to do anyway: the session was adapted at
+        # startup, and re-pushing it on every reconnect only churns the viewers.
+        async def _sync_later():
+            """Bring the driven tab in line with the profile, out of band."""
             try:
-                if IFRAME_HOST:
-                    # The profile becomes session state, like everything else in
-                    # this mode. Applying it to a tab would adapt whatever was
-                    # pinned — often the hosting service's own page — and would
-                    # reach nobody, since the person is reading elsewhere.
-                    r = await asyncio.to_thread(receiver.syncProfileToSession)
-                    _log(f"profile from {SERVICE_URL} -> session: "
-                         f"{list(r.get('settings') or {}) or 'none recorded'}")
-                    r = None
-                else:
-                    await asyncio.to_thread(a11y_target, target)
-                    r = await asyncio.to_thread(a11y_sync)
-                if r is None:
-                    raise StopIteration
+                await asyncio.to_thread(a11y_target, target)
+                r = await asyncio.to_thread(a11y_sync)
                 # The browser-level part is logged too: it is the only place a
                 # failure to follow the profile into Chrome's own settings would
                 # otherwise be visible.
                 _log(f"profile from {SERVICE_URL}: "
                      f"{list(r.get('settings') or {}) or 'none recorded'}"
                      f" | browser: {json.dumps(r.get('browser'))}")
-            except StopIteration:
-                pass          # iframe mode logged its own line above
             except Exception as e:
                 _log(f"profile unavailable: {e}")
+
+        # Not awaited, and not run at all in iframe mode. Awaiting it would
+        # hold the connection's coroutine before _handle starts reading, so a
+        # slow profile service or a frame mid-load leaves the chat hanging with
+        # its requests unread. In iframe mode there is nothing to do anyway: the
+        # session was adapted at startup, and re-pushing it on every reconnect
+        # only churns every viewer.
+        if sync_on_connect and not IFRAME_HOST:
+            asyncio.create_task(_sync_later())
         try:
             await _handle(ws, receiver)
         finally:
