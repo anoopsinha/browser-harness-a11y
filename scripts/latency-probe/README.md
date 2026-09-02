@@ -6,8 +6,8 @@ on a hosted machine, does its speech arrive fast enough to be usable?**
 A blind reader navigates by interrupting speech constantly — arrow, arrow, cut
 it off, move on. So the number that matters is not bandwidth but the delay
 between causing a sound and hearing it. If that delay is small, hosting the
-browser is viable and no semantic mirror is needed. If it is large, it is not,
-whatever else is true.
+browser is viable. If it is large, it is not, whatever else is true, and
+screen-reader testing has to happen on the participant's own machine.
 
 ## What is already known
 
