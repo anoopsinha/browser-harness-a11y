@@ -44,9 +44,8 @@ def page_does(monkeypatch, applied_keys, skipped_keys=()):
 def chrome_answers(monkeypatch, states):
     seen = {}
 
-    def fake(patience=10.0, said=False, **settings):
+    def fake(patience=10.0, **settings):
         seen.update(settings)
-        seen["_said"] = said
         return {k: {"state": "on" if states.get(k, settings[k]) else "off", "changed": True}
                 for k in settings}
 
@@ -62,7 +61,7 @@ def test_a_setting_the_page_cannot_do_is_asked_of_the_browser(receiver, monkeypa
 
     r = receiver.applySettings({"autoDescribe": True})
 
-    assert seen == {"autoDescribe": True, "_said": True}  # they named it
+    assert seen == {"autoDescribe": True}
     assert r["applied"] == {"autoDescribe": True}
     assert "autoDescribe" not in r["rejected"]
     assert r["chrome"]["autoDescribe"]["state"] == "on"
@@ -76,7 +75,7 @@ def test_turning_one_off_reaches_the_browser_too(receiver, monkeypatch):
 
     r = receiver.applySettings({"caretBrowsing": False})
 
-    assert seen == {"caretBrowsing": False, "_said": True}
+    assert seen == {"caretBrowsing": False}
     assert r["applied"] == {"caretBrowsing": False}
 
 
@@ -152,7 +151,7 @@ def test_the_single_flag_this_replaced_is_still_honoured(prefs_file):
 def follow_spy(monkeypatch):
     calls = []
 
-    def fake(patience=10.0, said=False, **settings):
+    def fake(patience=10.0, **settings):
         calls.append(settings)
         return {k: {"state": "on" if v else "off", "changed": True}
                 for k, v in settings.items()}
@@ -191,59 +190,53 @@ def test_being_told_overrides_ownership(follow_spy, prefs_file):
 
 
 def test_captions_and_descriptions_are_followed_independently(follow_spy, prefs_file):
-    r = a11y._follow_browser({"showCaptions": True, "autoDescribe": False})
+    r = a11y._follow_browser({"liveCaptions": True, "autoDescribe": False})
 
     assert {"liveCaptions": True} in follow_spy
-    assert r["autoDescribe"] == {"state": "left alone"}
+    assert {"autoDescribe": False} in follow_spy
+    assert r["autoDescribe"]["state"] == "off"
 
 
-# ---- what they said outlives what the profile implies -------------------
-# "turn off live captions" switched Chrome off, and the next profile sync — one
-# per chat reconnect — derived liveCaptions from the hearing profile and switched
-# it straight back on. The person is told it is off, and it is not.
+# ---- the profile is the only record ------------------------------------
+# These used to be remembered in a file here, because the profile could not
+# express liveCaptions and so could not carry an explicit "off". It names the
+# setting now, so the decision lives at user-explicit in the profile — the tier
+# resetToProfile forgets — and this reads it rather than keeping a copy.
 
-def test_an_explicit_choice_survives_the_next_profile_sync(follow_spy, prefs_file):
-    a11y._remember_said("liveCaptions", False)
+def test_an_explicit_off_in_the_profile_is_honoured(follow_spy, prefs_file):
+    """How "turn off live captions" survives the next sync."""
+    r = a11y._follow_browser({"showCaptions": True, "liveCaptions": False})
 
-    r = a11y._follow_browser({"showCaptions": True, "autoCaptions": True})
-
-    assert {"liveCaptions": True} not in follow_spy
+    assert {"liveCaptions": False} in follow_spy
     assert r["liveCaptions"]["state"] == "off"
 
 
-def test_asking_for_it_again_puts_it_back(follow_spy, prefs_file):
-    a11y._remember_said("liveCaptions", False)
-    a11y._remember_said("liveCaptions", True)
-
-    a11y._follow_browser({"showCaptions": True})
+def test_the_profile_asking_for_it_turns_it_on(follow_spy, prefs_file):
+    """And how resetToProfile gives it back: the record goes, this returns True."""
+    a11y._follow_browser({"showCaptions": True, "liveCaptions": True})
 
     assert {"liveCaptions": True} in follow_spy
 
 
-def test_a_profile_still_drives_a_setting_they_never_mentioned(follow_spy, prefs_file):
-    a11y._remember_said("liveCaptions", False)
+def test_a_setting_the_profile_never_mentions_is_left_alone(follow_spy, prefs_file):
+    r = a11y._follow_browser({"fontScale": 150})
 
-    a11y._follow_browser({"showCaptions": True, "autoDescribe": True})
-
-    assert {"autoDescribe": True} in follow_spy
-
-
-def test_only_a_named_request_is_remembered(prefs_file, monkeypatch):
-    """A setting the profile merely implied is not a decision they made."""
-    monkeypatch.setattr(a11y, "_settings_tab", lambda: __import__("contextlib").nullcontext("t"))
-    monkeypatch.setattr(a11y, "_set_toggle", lambda tid, label, want, patience: ("on", False))
-
-    a11y.a11y_chrome_apply(liveCaptions=True)
-    assert a11y._was_said("liveCaptions") is None
-
-    a11y.a11y_chrome_apply(said=True, liveCaptions=True)
-    assert a11y._was_said("liveCaptions") is True
+    assert follow_spy == []
+    assert r["liveCaptions"] == {"state": "left alone"}
 
 
-def test_claiming_a_setting_does_not_forget_what_was_said(prefs_file):
-    """_claim used to rewrite the whole file."""
-    a11y._remember_said("liveCaptions", False)
+def test_captions_are_no_longer_inferred_from_the_page_caption_keys(follow_spy, prefs_file):
+    """Inferring it meant owning state the profile never expressed, so an
+    explicit off could not be recorded against it."""
+    a11y._follow_browser({"showCaptions": True, "autoCaptions": True})
+
+    assert follow_spy == []
+
+
+def test_what_we_switched_on_is_still_switched_back_off(follow_spy, prefs_file):
+    """Unrelated to preference: this is about the browser's prior state."""
     a11y._claim("autoDescribe", True)
 
-    assert a11y._was_said("liveCaptions") is False
-    assert a11y._is_ours("autoDescribe")
+    a11y._follow_browser({"fontScale": 150})
+
+    assert {"autoDescribe": False} in follow_spy

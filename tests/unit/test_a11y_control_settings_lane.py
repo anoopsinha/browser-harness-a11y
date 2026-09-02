@@ -41,7 +41,7 @@ def test_a_question_is_left_to_the_agent(utterance):
 @pytest.fixture
 def receiver(monkeypatch):
     r = control.Receiver.__new__(control.Receiver)
-    r._target, r._sid = "driven", "s1"
+    r._target, r._sid, r._persist_scope = "driven", "s1", None
     monkeypatch.setattr(control, "_log", lambda *a, **k: None)
     monkeypatch.setattr(control.Receiver, "_ensure", lambda self: None)
     return r

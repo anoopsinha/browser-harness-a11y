@@ -59,6 +59,15 @@ if [ -f "$A11Y/.env" ]; then
   [ -n "${ADMIN_PASSWORD:-}" ] && export ADMIN_PASSWORD
 fi
 
+# One store, not two. Onboarding defaults to ONBOARD_MODE=local and keeps its own
+# copy of every profile under onboarding/onboarding-data, while the receiver
+# reads and writes the Librarian service on :8080. Same person, two files: a
+# preference the receiver recorded was invisible to the chat, and the chat's
+# "reset to my profile" cleared records the receiver never read — the reset
+# reported success, having forgotten nothing.
+export ONBOARD_MODE="${AA_ONBOARD_MODE:-remote}"
+export TOOLKIT_URL="${AA_TOOLKIT_URL:-http://127.0.0.1:8080}"
+
 # Elapsed seconds since `up` started, so a slow step names itself.
 T0=$(date +%s)
 el() { printf '%3ds' "$(( $(date +%s) - T0 ))"; }

@@ -29,8 +29,8 @@ from pathlib import Path
 
 from . import (SERVICE_URL, _CHROME_CONTROLS, _WANTS_CAPTIONS, _build_id,
                _bundle_source, _follow_captions, _guarded, _js,
-               _remember_said, a11y_chrome_apply, a11y_live_captions,
-               a11y_service, a11y_sync, a11y_target)
+               a11y_chrome_apply, a11y_live_captions, a11y_service,
+               a11y_sync, a11y_target)
 from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
@@ -394,6 +394,22 @@ class Receiver:
             "capabilities": self._capabilities(),
         }
 
+    def _record(self, settings, scope=None):
+        """Write a stated preference into the profile, at user-explicit.
+
+        The tier resetToProfile forgets. A browser-level setting has to land
+        here like any other, or "back to my profile" cannot give it back — and
+        keeping a private copy of the same fact would silently outvote the reset.
+        """
+        target = scope or self._persist_scope
+        if not (target and settings):
+            return
+        try:
+            a11y_service("recordScopedSettings", target, settings,
+                         {"scopeLabel": "said in the controller"})
+        except Exception as e:
+            _log(f"not persisted: {e}")
+
     def applySettings(self, changes, scope=None):
         self._ensure()
         if not isinstance(changes, dict) or not changes:
@@ -408,8 +424,7 @@ class Receiver:
         browser = None
         if asked is not None:
             browser = a11y_live_captions(bool(asked))
-            # Named by the person, so it outlives the profile's inference.
-            _remember_said("liveCaptions", bool(asked))
+            self._record({"liveCaptions": bool(asked)}, scope)
             if not changes:
                 return {"applied": {"liveCaptions": bool(asked)}, "previous": {},
                         "rejected": [], "browser": browser}
@@ -449,7 +464,7 @@ class Receiver:
                     if k in _CHROME_CONTROLS and k not in applied}
         if fallback:
             try:
-                for key, r in a11y_chrome_apply(said=True, **fallback).items():
+                for key, r in a11y_chrome_apply(**fallback).items():
                     if key == "unsupported":
                         continue
                     if r.get("state") in ("on", "off") and (r["state"] == "on") == bool(changes[key]):
@@ -485,13 +500,7 @@ class Receiver:
 
         # A person stating a preference through the Controller is an explicit
         # choice, which is the one provenance the profile's strongest tier is for.
-        target_scope = scope or self._persist_scope
-        if target_scope:
-            try:
-                a11y_service("recordScopedSettings", target_scope, applied,
-                             {"scopeLabel": "said in the controller"})
-            except Exception as e:
-                _log(f"not persisted: {e}")
+        self._record(applied, scope)
 
         out = {"applied": applied, "previous": previous, "rejected": rejected}
         if browser:
@@ -621,10 +630,11 @@ class Receiver:
             hit = browser_setting_request(utterance)
             if hit:
                 name, want = hit
-                r = a11y_chrome_apply(said=True, **{name: want}).get(name, {})
+                r = a11y_chrome_apply(**{name: want}).get(name, {})
                 state, label = r.get("state"), _CHROME_CONTROLS[name]
                 _log(f"answered {utterance.strip()!r} directly: {name} -> {state}")
                 if state in ("on", "off") and (state == "on") == want:
+                    self._record({name: want})
                     return {"ok": True,
                             "detail": f"{label} is {'on' if want else 'off'}"}
                 # Say what is actually true. The person may have no way to look.
@@ -874,7 +884,11 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
 
 def main(argv):
     host, port = "127.0.0.1", 9333
-    persist_scope, sync, target = None, True, None
+    # Recording defaults ON, at the broadest scope. It was None, which meant the
+    # "said in the controller" write below never ran for anything — a spoken
+    # preference lasted until the next sync and then vanished, with no record in
+    # the profile for resetToProfile to give back. --persist narrows it.
+    persist_scope, sync, target = "general", True, None
     it = iter(argv)
     for a in it:
         if a == "--port":
@@ -884,6 +898,8 @@ def main(argv):
         elif a == "--persist":
             # e.g. --persist general | category:reference | origin:example.com
             persist_scope = next(it, None)
+        elif a == "--no-persist":
+            persist_scope = None
         elif a == "--no-sync":
             sync = False
         elif a == "--target":
