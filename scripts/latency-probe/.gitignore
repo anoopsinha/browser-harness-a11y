@@ -1,0 +1,4 @@
+# Microphone recordings of whoever ran the probe. Never commit these.
+capture-*.wav
+selftest.wav
+click*.wav
