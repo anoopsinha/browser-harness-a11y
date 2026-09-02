@@ -200,6 +200,8 @@ a11y_profile("dyslexia")      # or apply a preset
 a11y_status()                 # which adapters are live
 a11y_off()                    # turn everything off
 a11y_live_captions(True)      # Chrome's own Live Caption (browser-wide, persists)
+a11y_chrome_settings()        # what chrome://settings/accessibility offers, and its state
+a11y_chrome_apply(autoDescribe=True)   # set one there
 PY
 ```
 
@@ -217,6 +219,12 @@ PY
   also be asked for by name — `a11y_apply(liveCaptions=False)`, or
   `liveCaptions` in a Controller settings request — and an explicit request
   wins over the profile.
+- **The browser has accessibility of its own.** A settings request the page
+  cannot satisfy is asked of `chrome://settings/accessibility`: `autoDescribe`
+  (Chrome describes unlabelled images with a real model, where the toolkit can
+  only report `needs-ai`), `caretBrowsing`, `focusHighlight`, `hideProfanity`,
+  `liveTranslate`, `liveCaptions`. Only what the page could not do — these are
+  browser-wide and persist, so one a page adapter already handled is left alone.
 - **Presets**: `blind`, `lowVision`, `colorBlind`, `deaf`, `motor`, `dyslexia`,
   `adhd`, `cognitive`, `olderAdult`, `anxiety`, `sensory`, `photosensitive`.
 - Settings needing an LLM (`autoDescribe`, `autoFixLabels`) report `needs-ai`

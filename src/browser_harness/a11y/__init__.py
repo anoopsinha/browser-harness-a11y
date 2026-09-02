@@ -8,6 +8,7 @@ pixels alone.
 
 The bundle is generated — run `python3 scripts/build_a11y.py` first.
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -87,6 +88,22 @@ _BROWSER_PREFS_FILE = runtime_dir() / "a11y-browser-prefs.json"
 # reading rather than hearing, and the page-level adapters can only reach a
 # video's own caption track — Chrome's Live Caption is what covers the rest.
 _WANTS_CAPTIONS = ("showCaptions", "autoCaptions")
+
+# What chrome://settings/accessibility offers, keyed by the setting name we
+# accept. The browser has accessibility of its own, and some of it no page-level
+# adapter can reach: Chrome will describe unlabelled images with a real model,
+# where the toolkit can only report autoDescribe as needs-ai.
+#
+# Labels, not ids: three of these controls carry no id at all, so the visible
+# label is the only handle Chrome gives us for them.
+_CHROME_CONTROLS = {
+    "liveCaptions": "Live Caption",
+    "autoDescribe": "Get image descriptions from Google",
+    "caretBrowsing": "Navigate pages with a text cursor",
+    "focusHighlight": "Show a quick highlight on the focused object",
+    "hideProfanity": "Hide profanity",
+    "liveTranslate": "Live Translate",
+}
 
 # The toggle sits behind several shadow roots in the settings WebUI, so it can
 # only be found by walking them. Its id is Chrome's, not ours, and a future
@@ -175,73 +192,67 @@ def _browser_prefs():
         return {}
 
 
-def a11y_live_captions(on=True, patience=10.0):
-    """Switch Chrome's own Live Caption on or off.
+def _claim(name, ours):
+    """Record, or drop, our claim on one browser-level setting."""
+    prefs = _browser_prefs()
+    owned = prefs.get("ours")
+    if not isinstance(owned, dict):
+        # Migrated from the single flag this held when Live Caption was the only
+        # browser setting we touched.
+        owned = {"liveCaptions": True} if prefs.get("live_captions_ours") else {}
+    if ours:
+        owned[name] = True
+    else:
+        owned.pop(name, None)
+    _BROWSER_PREFS_FILE.write_text(json.dumps({"ours": owned}))
 
-    Not the same thing as the showCaptions adapter, which turns on a video's own
-    caption track. This is Chrome generating captions on-device for *any* audio,
-    which is the only thing that helps with the untracked video and autoplay
-    clips that otherwise leave someone who is deaf with nothing to read.
 
-    Chrome exposes no CDP surface for its preferences, so this drives the
-    settings page the way a person would. That page is WebUI: reachable, but its
-    element ids belong to Chrome, so a rename shows up here as
-    {"live_captions": "not-found"} rather than an exception.
+def _is_ours(name):
+    prefs = _browser_prefs()
+    owned = prefs.get("ours")
+    if isinstance(owned, dict):
+        return bool(owned.get(name))
+    return name == "liveCaptions" and bool(prefs.get("live_captions_ours"))
+
+
+def _find_toggle_js(label):
+    """A walk to one toggle on the settings page, by its visible label.
+
+    By label rather than id because three of the controls on
+    chrome://settings/accessibility carry no id at all — the label is the only
+    handle Chrome gives us for them.
     """
-    want = bool(on)
-    here = _driven_target or current_tab()["targetId"]
+    return """
+  const find = (root, d) => {
+    if (d > 14 || !root) return null;
+    for (const el of root.querySelectorAll('*')) {
+      if (el.tagName === 'SETTINGS-TOGGLE-BUTTON') {
+        const l = (el.getAttribute('label') || el.getAttribute('aria-label') || '').trim();
+        if (l.toLowerCase() === %s) return el;
+      }
+      if (el.shadowRoot) { const f = find(el.shadowRoot, d + 1); if (f) return f; }
+    }
+    return null;
+  };
+""" % json.dumps(label.lower())
 
-    opened = False
+
+@contextlib.contextmanager
+def _settings_tab():
+    """The accessibility settings page, open for the duration and tidied after.
+
+    Reuses a settings tab if one is already open, so a person who happens to be
+    looking at their settings does not get a second copy of them.
+    """
+    here = _driven_target or current_tab()["targetId"]
     tid = next((t["targetId"] for t in list_tabs(include_chrome=True)
                 if (t.get("url") or "").startswith("chrome://settings")), None)
+    opened = False
     if not tid:
         tid = new_tab("chrome://settings/accessibility")
         opened = True
-
-    read = ("(() => {%s const el = find(document, 0);"
-            " return el ? (el.checked ? 'on' : 'off') : 'not-found'; })()"
-            % _FIND_LIVE_CAPTION)
-    click = ("(() => {%s const el = find(document, 0); if (!el) return 'not-found';"
-             " el.click(); return 'clicked'; })()" % _FIND_LIVE_CAPTION)
     try:
-        # Two waits in one loop. The settings page mounts its shadow roots
-        # asynchronously, so the toggle is missing for a moment on a tab we just
-        # opened; and it then exists for a further moment before it is bound to
-        # the pref, during which a click on it is simply dropped. Clicking once
-        # and trusting it turned Live Caption on about half the time.
-        deadline = time.time() + patience
-        state, was_on = "not-found", None
-        while time.time() < deadline:
-            state = js(read, target_id=tid)
-            if state == "not-found":
-                time.sleep(0.25)
-                continue
-            if was_on is None:
-                was_on = state == "on"
-            if (state == "on") == want:
-                break
-            js(click, target_id=tid)
-            time.sleep(0.5)
-
-        if was_on is None:
-            return {"live_captions": "not-found",
-                    "detail": "Chrome moved the Live Caption toggle; set it by hand"
-                              " at chrome://settings/accessibility"}
-        if (state == "on") != want:
-            return {"live_captions": state, "changed": was_on != (state == "on"),
-                    "detail": f"asked for {'on' if want else 'off'} but the toggle "
-                              f"stayed {state} after {patience:g}s"}
-
-        # Remember only a switch we threw ourselves, so a11y_off leaves alone a
-        # setting they had turned on before we ever ran.
-        prefs = _browser_prefs()
-        if want and not was_on:
-            prefs["live_captions_ours"] = True
-        elif not want:
-            prefs.pop("live_captions_ours", None)
-        _BROWSER_PREFS_FILE.write_text(json.dumps(prefs))
-
-        return {"live_captions": state, "changed": was_on != want}
+        yield tid
     finally:
         # new_tab attaches the daemon to the tab it opens, so the session has to
         # come home before that tab is closed — otherwise every later call lands
@@ -258,12 +269,123 @@ def a11y_live_captions(on=True, patience=10.0):
                 cdp("Target.closeTarget", targetId=tid)
             except Exception:
                 pass  # they may have closed it themselves; nothing to clean up
-        # Opening a tab takes the screen away from whatever they were reading.
         try:
             activate_tab(here)
         except Exception:
             pass
 
+
+def _read_toggle(tid, label):
+    return js("(() => {%s const el = find(document, 0);"
+              " return el ? (el.checked ? 'on' : 'off') : 'not-found'; })()"
+              % _find_toggle_js(label), target_id=tid)
+
+
+def _set_toggle(tid, label, want, patience):
+    """Move one toggle, and say what it ended up as.
+
+    Two waits in one loop. The settings page mounts its shadow roots
+    asynchronously, so a control is missing for a moment on a tab we just
+    opened; and it then exists for a further moment before it is bound to the
+    pref, during which a click on it is simply dropped. Clicking once and
+    trusting it worked about half the time.
+    """
+    click = ("(() => {%s const el = find(document, 0); if (!el) return 'not-found';"
+             " el.click(); return 'clicked'; })()" % _find_toggle_js(label))
+    deadline = time.time() + patience
+    state, was = "not-found", None
+    while time.time() < deadline:
+        state = _read_toggle(tid, label)
+        if state == "not-found":
+            time.sleep(0.25)
+            continue
+        if was is None:
+            was = state == "on"
+        if (state == "on") == want:
+            break
+        js(click, target_id=tid)
+        time.sleep(0.5)
+    return state, was
+
+
+def a11y_chrome_settings():
+    """What chrome://settings/accessibility currently offers, and its state.
+
+    The browser has accessibility of its own, and some of it the page-level
+    adapters cannot reach at all: Chrome will describe unlabelled images with a
+    real model, where the toolkit can only report autoDescribe as needs-ai.
+    """
+    out = {}
+    with _settings_tab() as tid:
+        time.sleep(1.0)  # let the page mount before the first read
+        for name, label in _CHROME_CONTROLS.items():
+            try:
+                out[name] = {"label": label, "state": _read_toggle(tid, label),
+                             "ours": _is_ours(name)}
+            except Exception as e:
+                out[name] = {"label": label, "state": "unreadable", "detail": str(e)}
+    return out
+
+
+def a11y_chrome_apply(patience=10.0, **settings):
+    """Set browser-level accessibility settings on the Chrome settings page.
+
+    Chrome exposes no CDP surface for its preferences, so these are driven the
+    way a person would drive them. That page is WebUI: reachable, but its
+    controls are Chrome's, so one that has been renamed or removed is reported
+    as "not-found" rather than raised.
+
+    These outlive the tab and the session, and in attach mode they are the
+    person's own profile — so we record which ones we switched on, and undo only
+    those. See _BROWSER_PREFS_FILE.
+    """
+    unknown = [k for k in settings if k not in _CHROME_CONTROLS]
+    todo = {k: v for k, v in settings.items() if k in _CHROME_CONTROLS}
+    out = {"unsupported": unknown} if unknown else {}
+    if not todo:
+        return out
+
+    with _settings_tab() as tid:
+        for name, value in todo.items():
+            label, want = _CHROME_CONTROLS[name], bool(value)
+            try:
+                state, was = _set_toggle(tid, label, want, patience)
+            except Exception as e:
+                out[name] = {"state": "failed", "detail": str(e)}
+                continue
+            if was is None:
+                out[name] = {"state": "not-found",
+                             "detail": f"Chrome has no \"{label}\" control here;"
+                                       " set it by hand at chrome://settings/accessibility"}
+                continue
+            if (state == "on") != want:
+                out[name] = {"state": state, "changed": False,
+                             "detail": f"asked for {'on' if want else 'off'} but it"
+                                       f" stayed {state} after {patience:g}s"}
+                continue
+            if want and not was:
+                _claim(name, True)
+            elif not want:
+                _claim(name, False)
+            out[name] = {"state": state, "changed": was != want}
+    return out
+
+
+def a11y_live_captions(on=True, patience=10.0):
+    """Switch Chrome's own Live Caption on or off.
+
+    Not the same thing as the showCaptions adapter, which turns on a video's own
+    caption track. This is Chrome generating captions on-device for *any* audio,
+    which is the only thing that helps with the untracked video and autoplay
+    clips that otherwise leave someone who is deaf with nothing to read.
+    """
+    r = a11y_chrome_apply(patience=patience, liveCaptions=bool(on)).get("liveCaptions", {})
+    out = {"live_captions": r.get("state", "not-found")}
+    if "changed" in r:
+        out["changed"] = r["changed"]
+    if "detail" in r:
+        out["detail"] = r["detail"]
+    return out
 
 def _build_id(source):
     """Identity of this bundle build, so a page can tell stale from current."""
@@ -482,7 +604,7 @@ def _follow_captions(settings, explicit=False):
     wanted = any(settings.get(k) for k in _WANTS_CAPTIONS)
     if wanted:
         return a11y_live_captions(True)
-    if explicit or _browser_prefs().get("live_captions_ours"):
+    if explicit or _is_ours("liveCaptions"):
         return a11y_live_captions(False)
     return {"live_captions": "left alone"}
 
@@ -703,4 +825,5 @@ __all__ = [
     "a11y_attach", "a11y_profiles", "a11y_profile", "a11y_apply", "a11y_off",
     "a11y_status", "a11y_service", "a11y_sync", "a11y_snapshot", "a11y_audit",
     "a11y_sticky", "a11y_layout", "a11y_target", "a11y_live_captions",
+    "a11y_chrome_settings", "a11y_chrome_apply",
 ]

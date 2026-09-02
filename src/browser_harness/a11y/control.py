@@ -27,9 +27,10 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import (SERVICE_URL, _WANTS_CAPTIONS, _build_id, _bundle_source,
-               _follow_captions, _guarded, _js, a11y_live_captions,
-               a11y_service, a11y_sync, a11y_target)
+from . import (SERVICE_URL, _CHROME_CONTROLS, _WANTS_CAPTIONS, _build_id,
+               _bundle_source, _follow_captions, _guarded, _js,
+               a11y_chrome_apply, a11y_live_captions, a11y_service,
+               a11y_sync, a11y_target)
 from ..admin import ensure_daemon, restart_daemon
 from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 
@@ -328,8 +329,12 @@ class Receiver:
             # liveCaptions is ours, not the toolkit's: Chrome captions any audio
             # on-device, which no page-level adapter can do. Advertised so the
             # Controller can offer it by name.
-            "settingKeys": (self._eval("return globalThis.__BH_A11Y.supportedKeys()") or [])
-                           + ["liveCaptions"],
+            # Chrome's own accessibility settings are ours to offer too: the
+            # page-level catalog has no adapter for several of them, and for
+            # autoDescribe no adapter that can actually run.
+            "settingKeys": sorted(set(
+                (self._eval("return globalThis.__BH_A11Y.supportedKeys()") or [])
+                + list(_CHROME_CONTROLS))),
             "actions": self._actions(),
             "canReadContent": True,
             "targets": self._eval("return globalThis.__BH_A11Y.targets(40)"),
@@ -384,6 +389,35 @@ class Receiver:
         rejected = [s["setting"] for s in result.get("skipped", [])]
         rejected += [e["adapter"] for e in result.get("errors", [])]
 
+        # Whatever the page could not do, ask the browser about. Chrome has
+        # accessibility of its own, and for some of these it is the only thing
+        # that can help at all: autoDescribe comes back needs-ai from a toolkit
+        # holding no model, while Chrome will describe the images with one.
+        #
+        # Only what the page could not do. These settings are browser-wide and
+        # persist, so reaching for one where a page adapter already did the job
+        # would change more of someone's browser than they asked for.
+        chrome = {}
+        # Anything Chrome knows about that the page did not actually apply —
+        # not merely what it rejected. An off value never reaches the reject
+        # list at all: the dispatcher looks for an adapter to stop, finds none
+        # for a browser-level setting, and moves on silently. Keying off
+        # `applied` catches turning one off as well as turning it on.
+        fallback = {k: v for k, v in changes.items()
+                    if k in _CHROME_CONTROLS and k not in applied}
+        if fallback:
+            try:
+                for key, r in a11y_chrome_apply(**fallback).items():
+                    if key == "unsupported":
+                        continue
+                    if r.get("state") in ("on", "off") and (r["state"] == "on") == bool(changes[key]):
+                        applied[key] = changes[key]
+                        if key in rejected:
+                            rejected.remove(key)
+                    chrome[key] = r
+            except Exception as e:
+                _log(f"chrome settings unreachable: {e}")
+
         # Turning a setting off produces no "applied" rows — there is no adapter
         # to report — so the browser has to be followed before this early
         # return, or "switch captions off" leaves Chrome still captioning.
@@ -401,6 +435,8 @@ class Receiver:
             out = {"error": "nothing applied", "rejected": rejected}
             if browser:
                 out["browser"] = browser
+            if chrome:
+                out["chrome"] = chrome
             return out
 
         self._undo.append({k: previous[k] for k in applied})
@@ -418,6 +454,8 @@ class Receiver:
         out = {"applied": applied, "previous": previous, "rejected": rejected}
         if browser:
             out["browser"] = browser
+        if chrome:
+            out["chrome"] = chrome
         return out
 
     def undoLast(self):

@@ -59,7 +59,7 @@ def test_turning_it_on_clicks_once_and_records_that_it_was_ours(
 
     assert r == {"live_captions": "on", "changed": True}
     assert seen["clicks"] == 1
-    assert json.loads(prefs_file.read_text())["live_captions_ours"] is True
+    assert a11y._is_ours("liveCaptions")
 
 
 def test_already_on_is_left_alone_and_not_claimed_as_ours(
@@ -71,7 +71,7 @@ def test_already_on_is_left_alone_and_not_claimed_as_ours(
 
     assert r == {"live_captions": "on", "changed": False}
     assert seen["clicks"] == 0
-    assert "live_captions_ours" not in json.loads(prefs_file.read_text())
+    assert not a11y._is_ours("liveCaptions")
 
 
 def test_a_click_that_does_not_take_is_retried(settings_page, prefs_file, monkeypatch):
@@ -106,12 +106,12 @@ def test_a_renamed_toggle_is_an_answer_not_an_exception(
 
 
 def test_switching_it_off_drops_our_claim(settings_page, prefs_file, monkeypatch):
-    prefs_file.write_text(json.dumps({"live_captions_ours": True}))
+    prefs_file.write_text(json.dumps({"ours": {"liveCaptions": True}}))
     scripted(monkeypatch, ["on", "off"])
 
     a11y.a11y_live_captions(False)
 
-    assert "live_captions_ours" not in json.loads(prefs_file.read_text())
+    assert not a11y._is_ours("liveCaptions")
 
 
 def test_the_tab_it_opened_is_closed_and_the_session_comes_home_first(
@@ -173,7 +173,7 @@ def test_a_profile_that_reads_rather_than_hears_turns_it_on(settings, spy, prefs
 
 
 def test_it_is_turned_off_again_when_the_profile_stops_asking(spy, prefs_file):
-    prefs_file.write_text(json.dumps({"live_captions_ours": True}))
+    prefs_file.write_text(json.dumps({"ours": {"liveCaptions": True}}))
 
     a11y._follow_captions({"largeText": True})
 
