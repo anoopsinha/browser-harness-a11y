@@ -33,6 +33,11 @@
   // browser and the one on the hosted VM are separate documents rendering the
   // same page, so a navigation has to be state they both watch — otherwise
   // "open this page" moves one screen and not the other.
+  // Named, not located. This page is reached as localhost:8124 and as
+  // 127.0.0.1:8124 and through a tunnel as something else again, so anything
+  // looking for it matches on this rather than on a URL.
+  window.__BH_IFRAME_VIEWER = true;
+
   const frame = document.getElementById('frame');
   const url = document.getElementById('url');
   const status = document.getElementById('status');

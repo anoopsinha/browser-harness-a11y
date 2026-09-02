@@ -150,3 +150,46 @@ def test_without_the_env_it_still_drives_the_tab(receiver, monkeypatch):
 
     assert "location.assign" in seen["eval"]
     assert r["ok"] is True
+
+
+def test_the_viewer_is_found_by_what_it_is_not_where_it_is_served(receiver, monkeypatch):
+    """localhost:8124 and 127.0.0.1:8124 are the same server and different
+    strings. Matching the configured URL found nothing while the page sat open
+    under the other name."""
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control, "list_tabs", lambda include_chrome=True: [
+        {"targetId": "other", "url": "https://example.com/"},
+        {"targetId": "viewer", "url": "http://localhost:8124/"},
+    ])
+    asked = []
+
+    def fake_js(expression, target_id=None):
+        asked.append(target_id)
+        return target_id == "viewer"
+
+    monkeypatch.setattr(control, "js", fake_js)
+
+    assert receiver._iframe_viewer() == "viewer"
+    assert asked == ["viewer"]  # the port narrowed it before the page was asked
+
+
+def test_a_tunnelled_viewer_on_an_unexpected_url_is_still_found(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control, "list_tabs", lambda include_chrome=True: [
+        {"targetId": "a", "url": "https://example.com/"},
+        {"targetId": "b", "url": "https://tunnel.example/session/xyz"},
+    ])
+    monkeypatch.setattr(control, "js",
+                        lambda expression, target_id=None: target_id == "b")
+
+    assert receiver._iframe_viewer() == "b"
+
+
+def test_no_viewer_says_what_to_open(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control, "list_tabs", lambda include_chrome=True: [])
+    monkeypatch.setattr(control, "js", lambda *a, **k: False)
+
+    r = receiver._iframe_call("getContent", "outline")
+
+    assert "Framed page" in r["error"]

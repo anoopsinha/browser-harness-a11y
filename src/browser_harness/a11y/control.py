@@ -580,16 +580,30 @@ class Receiver:
         they would land on this copy alone — which is the one nobody is looking
         at.
         """
-        for t in list_tabs(include_chrome=False):
-            if (t.get("url") or "").startswith(IFRAME_HOST):
-                return t.get("targetId")
+        tabs = list_tabs(include_chrome=False)
+        port = urllib.parse.urlparse(IFRAME_HOST).port
+        # The same server is "localhost", "127.0.0.1" and, through a tunnel,
+        # something else again — so the port narrows the search and the page
+        # itself settles it. Matching the configured URL as a string found
+        # nothing while the viewer sat open under the other name.
+        likely = [t for t in tabs if port and f":{port}" in (t.get("url") or "")]
+        for t in (likely or tabs):
+            tid = t.get("targetId")
+            if not tid:
+                continue
+            try:
+                if js("!!window.__BH_IFRAME_VIEWER", target_id=tid):
+                    return tid
+            except Exception:
+                continue  # a tab that will not answer is not the viewer
         return None
 
     def _iframe_call(self, method, *args):
         """Call the bridge inside the local viewer's frame."""
         tid = self._iframe_viewer()
         if not tid:
-            return {"error": f"no viewer open — load {IFRAME_HOST}/ in a tab here"}
+            return {"error": "no viewer open on this machine — open the "
+                              f"Framed page ({IFRAME_HOST}/) in a tab here"}
         return js("""(() => new Promise((res) => {
             const f = document.getElementById('frame');
             if (!f || !f.contentWindow) return res({error: 'no frame'});
