@@ -39,6 +39,16 @@ LOGS="${AA_LOG_DIR:-/tmp}"
 # — that prompt is the cost of using your real profile, and it is the thing the
 # dedicated mode exists to avoid.
 CHROME_MODE="${AA_CHROME_MODE:-dedicated}"
+
+# AA_IFRAME=1 drives a page inside a frame served from localhost, instead of a
+# tab. That is the shape a hosted screen reader needs: it reads what is in its
+# own browser, reached through a tunnel that only exposes this machine's ports,
+# so the page under test has to be served from here rather than driven over CDP.
+IFRAME_MODE="${AA_IFRAME:-0}"
+IFRAME_PORT="${AA_IFRAME_PORT:-8124}"
+if [ "$IFRAME_MODE" = "1" ]; then
+  export BH_IFRAME_HOST="http://127.0.0.1:$IFRAME_PORT"
+fi
 CHROME_PORT="${AA_CHROME_PORT:-9222}"
 CHROME_DIR="${AA_CHROME_PROFILE:-$HOME/.a11y-chrome}"
 CHROME_BIN="${AA_CHROME_BIN:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
@@ -252,6 +262,10 @@ up() {
   # BU_CDP_URL is exported, so the agent's own browser-harness calls attach to
   # the same automation Chrome rather than hunting for a default profile.
   start_one agent      8787 "$AGENT"   ./run.sh                 || return 1
+  if [ "$IFRAME_MODE" = "1" ]; then
+    start_one "iframe host" "$IFRAME_PORT" "$A11Y" \
+      python3 scripts/iframe-host/server.py --port "$IFRAME_PORT" || return 1
+  fi
 
   # The receiver is restarted every time: it pins a tab at startup, and a stale
   # one silently keeps serving an old target (and old code — a second copy just
@@ -289,6 +303,17 @@ PY
     ok "chat (${pct:-33}%) and driven page tiled side by side"
     [ "$was_clamped" = "True" ] && info "Chrome will not size a window below ${actual_w}px, so the chat is ${pct}% rather than the third asked for"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
+
+  if [ "$IFRAME_MODE" = "1" ] && [ -n "$driven" ]; then
+    # The driven window becomes the viewer. The receiver reads through it, and
+    # anything it changes is pushed to every other viewer — including the one on
+    # the hosted machine, which is the only screen that matters.
+    if (cd "$A11Y" && bounded 30 ./browser-harness <<PY >/dev/null 2>&1
+goto_url("http://127.0.0.1:$IFRAME_PORT/")
+PY
+    ); then ok "driven window showing the Framed page"
+    else bad "could not open the Framed page"; fi
+  fi
 
   ( set +m; cd "$A11Y" && exec nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
       > "$LOGS/control.log" 2>&1 < /dev/null ) &
@@ -328,6 +353,9 @@ CONNECT
 status() {
   echo "status"
   local names=(librarian onboarding agent receiver) ports=(8080 4000 8787 9333)
+  if [ "$IFRAME_MODE" = "1" ]; then
+    names+=("iframe host"); ports+=("$IFRAME_PORT")
+  fi
   for i in "${!ports[@]}"; do
     if port_up "${ports[$i]}"; then ok "${names[$i]} :${ports[$i]}"
     else bad "${names[$i]} :${ports[$i]} down"; fi
@@ -359,7 +387,7 @@ status() {
 down() {
   echo "stopping"
   stop_chrome
-  for p in 9333 8787 4000 8080; do
+  for p in 9333 "$IFRAME_PORT" 8787 4000 8080; do
     local pid; pid="$(port_pid "$p")"
     [ -n "$pid" ] && { kill "$pid" 2>/dev/null; ok "stopped :$p"; } || info ":$p already down"
   done

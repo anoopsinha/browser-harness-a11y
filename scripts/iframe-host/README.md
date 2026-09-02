@@ -16,6 +16,15 @@ applied by code running inside the page rather than over a wire.
 
 ## Running it
 
+With the rest of the stack, which starts the host, points the driven window at
+it, and puts the receiver in iframe mode:
+
+```bash
+AA_IFRAME=1 ./scripts/a11y up
+```
+
+Or on its own, against a receiver you start yourself:
+
 ```bash
 python3 scripts/build_a11y.py            # adapters, if not already built
 python3 scripts/iframe-host/server.py    # http://127.0.0.1:8124/
