@@ -45,6 +45,36 @@ The injected `<script src>` is an absolute URL, deliberately: a relative one is
 resolved against the `<base>` that was just set, so the page loads perfectly and
 quietly fetches its adapters from the proxied site, where they do not exist.
 
+## The current page is server state
+
+Two browsers render the page under test: the operator's, and the one on the
+hosted VM reached through the tunnel. They are separate documents, so navigating
+a tab on this machine moves nothing on the tester's screen.
+
+So the current URL lives here instead, and every viewer follows it:
+
+```bash
+curl localhost:8124/state
+# {"url": "https://en.wikipedia.org/wiki/Apple", "rev": 3}
+
+curl -X POST localhost:8124/state -H 'Content-Type: application/json' \
+     -d '{"url":"https://example.com/"}'
+```
+
+`GET /events` is a server-sent stream that pushes each change, which is what the
+host page listens to. Verified with two viewers open at once: a POST from a third
+party moved both.
+
+Point the receiver at it so navigation goes the same way rather than driving a
+tab:
+
+```bash
+BH_IFRAME_HOST=http://127.0.0.1:8124 ./browser-harness control --port 9333
+```
+
+`describeCapabilities` then reports `platform: browser-harness-iframe`, so the
+Controller can tell which surface it is driving.
+
 ## Driving it
 
 `bridge.js` answers the same method names as the ControlPort receiver, so a

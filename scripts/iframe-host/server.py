@@ -22,6 +22,9 @@ moving parts, and a page that behaves more like itself.
 """
 import argparse
 import gzip
+import json
+import threading
+import time
 import io
 import re
 import sys
@@ -34,6 +37,35 @@ from pathlib import Path
 
 HERE = Path(__file__).parent
 BUNDLE = HERE.parent.parent / "src" / "browser_harness" / "a11y" / "bundle.js"
+
+# The page everyone is looking at, held here rather than in any one browser.
+#
+# Two browsers render this: the operator's, and the one on the hosted VM reached
+# through the tunnel. They are separate documents, so navigating a tab on this
+# machine moves nothing on the tester's screen. Keeping the current URL on the
+# server — and pushing changes — is what makes "open this page" mean the same
+# thing to both of them.
+STATE = {"url": "https://en.wikipedia.org/wiki/Apple", "rev": 0}
+STATE_LOCK = threading.Lock()
+LISTENERS = []          # open text/event-stream responses
+LISTENERS_LOCK = threading.Lock()
+
+
+def set_url(url):
+    with STATE_LOCK:
+        STATE["url"] = url
+        STATE["rev"] += 1
+        payload = dict(STATE)
+    line = ("data: " + json.dumps(payload) + "\n\n").encode()
+    with LISTENERS_LOCK:
+        for w in list(LISTENERS):
+            try:
+                w.write(line)
+                w.flush()
+            except Exception:
+                LISTENERS.remove(w)  # a viewer that closed its tab
+    return payload
+
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/140.0 Safari/537.36")
@@ -116,6 +148,11 @@ class Handler(BaseHTTPRequestHandler):
                                   "application/javascript; charset=utf-8")
             return self._send(200, BUNDLE.read_text(),
                               "application/javascript; charset=utf-8")
+        if route == "/state":
+            with STATE_LOCK:
+                return self._send(200, json.dumps(STATE), "application/json")
+        if route == "/events":
+            return self.events()
         if route == "/go":
             q = urllib.parse.parse_qs(parsed.query)
             url = (q.get("url") or [""])[0]
@@ -125,6 +162,51 @@ class Handler(BaseHTTPRequestHandler):
                 url = "https://" + url
             return self.proxy(url)
         self.send_error(404)
+
+    def do_POST(self):
+        if urllib.parse.urlparse(self.path).path != "/state":
+            return self.send_error(404)
+        n = int(self.headers.get("Content-Length") or 0)
+        try:
+            url = (json.loads(self.rfile.read(n) or b"{}") or {}).get("url", "")
+        except ValueError:
+            return self._send(400, json.dumps({"error": "bad json"}), "application/json")
+        url = (url or "").strip()
+        if not url:
+            return self._send(400, json.dumps({"error": "no url"}), "application/json")
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        return self._send(200, json.dumps(set_url(url)), "application/json")
+
+    def events(self):
+        """Server-sent events: one line per navigation, to every viewer."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        with STATE_LOCK:
+            first = ("data: " + json.dumps(STATE) + "\n\n").encode()
+        try:
+            self.wfile.write(first)
+            self.wfile.flush()
+        except Exception:
+            return
+        with LISTENERS_LOCK:
+            LISTENERS.append(self.wfile)
+        try:
+            while True:
+                time.sleep(15)
+                # A comment frame, so a proxy or tunnel that times out idle
+                # connections does not quietly drop the viewer.
+                self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+        except Exception:
+            pass
+        finally:
+            with LISTENERS_LOCK:
+                if self.wfile in LISTENERS:
+                    LISTENERS.remove(self.wfile)
 
     def proxy(self, url):
         req = urllib.request.Request(url, headers={

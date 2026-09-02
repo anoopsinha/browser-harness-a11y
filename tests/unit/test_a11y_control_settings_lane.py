@@ -93,3 +93,60 @@ def test_anything_else_still_goes_to_the_agent(receiver, monkeypatch):
     receiver.performAction("task", None, "open the news", {})
 
     assert seen["utterance"] == "open the news"
+
+
+# ---- iframe mode --------------------------------------------------------
+# The page under test is in an iframe served from localhost, and the person
+# reading it is on another machine watching their own copy through a tunnel.
+# Navigating a tab here moves nothing on their screen.
+
+def test_navigate_asks_the_iframe_host_rather_than_driving_a_tab(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: pytest.fail("must not navigate a tab in iframe mode"))
+    sent = {}
+
+    class Resp:
+        def read(self): return b'{"url":"https://example.com/","rev":4}'
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_open(req, timeout=None):
+        sent["url"] = req.full_url
+        sent["body"] = req.data
+        return Resp()
+
+    monkeypatch.setattr(control.urllib.request, "urlopen", fake_open)
+
+    r = receiver.performAction("navigate", "example.com", None, {})
+
+    assert sent["url"] == "http://127.0.0.1:8124/state"
+    assert b"https://example.com" in sent["body"]
+    assert r == {"ok": True, "detail": "opening https://example.com"}
+
+
+def test_a_host_that_is_not_running_is_reported_not_swallowed(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_eval", lambda self, e: None)
+
+    def boom(req, timeout=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(control.urllib.request, "urlopen", boom)
+
+    r = receiver.performAction("navigate", "example.com", None, {})
+
+    assert r["ok"] is False
+    assert "iframe host" in r["detail"]
+
+
+def test_without_the_env_it_still_drives_the_tab(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "")
+    seen = {}
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: seen.setdefault("eval", e))
+
+    r = receiver.performAction("navigate", "example.com", None, {})
+
+    assert "location.assign" in seen["eval"]
+    assert r["ok"] is True

@@ -29,30 +29,42 @@
 <iframe id="frame" title="Page under test"></iframe>
 
 <script>
-  // A way to check a page loads and its adapters came up, before a screen
-  // reader is involved. The settings themselves are the chat's job — this
-  // deliberately has no controls of its own.
+  // Every viewer follows the server, not its own address bar. The operator's
+  // browser and the one on the hosted VM are separate documents rendering the
+  // same page, so a navigation has to be state they both watch — otherwise
+  // "open this page" moves one screen and not the other.
   const frame = document.getElementById('frame');
   const url = document.getElementById('url');
   const status = document.getElementById('status');
+  let shownRev = -1;
 
-  function load(u) {
-    url.value = u;
+  function show(state) {
+    if (state.rev === shownRev) return;
+    shownRev = state.rev;
+    url.value = state.url;
     status.textContent = 'loading…';
-    frame.src = '/go?url=' + encodeURIComponent(u);
+    frame.src = '/go?url=' + encodeURIComponent(state.url);
   }
+
+  function request(u) {
+    // Ask the server; the answer comes back through the stream, to everyone.
+    fetch('/state', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ url: u }) })
+      .catch(() => { status.textContent = 'could not reach the host'; });
+  }
+
+  new EventSource('/events').onmessage = (e) => show(JSON.parse(e.data));
 
   addEventListener('message', (ev) => {
     const m = ev.data;
     if (!m) return;
-    // Navigation inside the frame has to come back through the proxy, or the
-    // next page arrives unadapted and framing headers apply to it again.
-    if (m.kind === 'bh-iframe-navigate') load(m.url);
+    // A link followed inside the frame becomes a navigation for every viewer,
+    // and comes back through the proxy so the next page is adapted too.
+    if (m.kind === 'bh-iframe-navigate') request(m.url);
     if (m.kind === 'bh-iframe-ready') status.textContent = 'adapters ready';
   });
 
-  url.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(e.target.value); });
-  load(url.value);
+  url.addEventListener('keydown', (e) => { if (e.key === 'Enter') request(e.target.value); });
 </script>
 </body>
 </html>

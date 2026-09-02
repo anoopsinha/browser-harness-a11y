@@ -45,6 +45,13 @@ from ..helpers import cdp, current_tab, js, list_tabs, new_tab
 # blocking subprocess.run that nothing can interrupt, so a task started there
 # cannot be stopped once it is moving.
 AGENT_URL = os.environ.get("BH_AGENT_URL", "http://127.0.0.1:8787/stream")
+
+# When the page under test lives in an iframe served by scripts/iframe-host,
+# navigation is server state rather than a tab. Two browsers render that page —
+# this machine's and the one on the hosted VM reached through the tunnel — and
+# they are separate documents, so driving a tab here moves nothing on the
+# tester's screen. Setting the shared URL moves both.
+IFRAME_HOST = (os.environ.get("BH_IFRAME_HOST") or "").rstrip("/")
 AGENT_CANCEL_URL = os.environ.get("BH_AGENT_CANCEL_URL", "http://127.0.0.1:8787/cancel")
 AGENT_TOKEN_FILE = os.environ.get(
     "BH_AGENT_TOKEN_FILE",
@@ -365,7 +372,7 @@ class Receiver:
     def _capabilities(self):
         self._ensure()
         return {
-            "platform": "browser-harness",
+            "platform": "browser-harness-iframe" if IFRAME_HOST else "browser-harness",
             # liveCaptions is ours, not the toolkit's: Chrome captions any audio
             # on-device, which no page-level adapter can do. Advertised so the
             # Controller can offer it by name.
@@ -537,6 +544,26 @@ class Receiver:
         return self._eval("return globalThis.__BH_A11Y.content(%s, %d)"
                           % (json.dumps(mode), int(chunk or 0)))
 
+    def _navigate_iframe(self, url):
+        """Point every viewer's frame at a page, by asking the host to move.
+
+        Not a tab navigation: the person reading this is on another machine,
+        watching their own copy of the host page through the tunnel. The only
+        thing both copies share is the server.
+        """
+        try:
+            req = urllib.request.Request(
+                IFRAME_HOST + "/state",
+                data=json.dumps({"url": url}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=10) as r:
+                rev = (json.loads(r.read() or b"{}") or {}).get("rev")
+            _log(f"iframe host -> {url} (rev {rev})")
+            return {"ok": True, "detail": f"opening {url}"}
+        except Exception as e:
+            return {"ok": False,
+                    "detail": f"could not reach the iframe host at {IFRAME_HOST} — {e}"}
+
     def performAction(self, actionId, target=None, text=None, meta=None):
         # Answered before _ensure(): silencing the room must not wait on the
         # toolkit bundle being injected into a heavy page, nor fail with it.
@@ -581,6 +608,8 @@ class Receiver:
                 return {"ok": False, "detail": "no address given"}
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
+            if IFRAME_HOST:
+                return self._navigate_iframe(url)
             self._eval("location.assign(%s); return 1" % json.dumps(url))
             return {"ok": True, "detail": f"opening {url}"}
 
