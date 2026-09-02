@@ -94,6 +94,19 @@ broadcasts writes — settings, navigation, activate and scroll — through the 
 and answers reads from a viewer open on this machine, since every viewer renders
 the same page with the same settings.
 
+### What this mode will not do
+
+`describeCapabilities` withholds `task`, so the chat does not offer open-ended
+agent work. The agent drives a browser over CDP, and in this mode that browser
+is not the one being read — it would act on documents the person never sees and
+leave stray tabs behind on the operator's machine. Settings, navigation, search,
+activate, scroll and reading all work; a sentence the grammar cannot place gets
+an explanation rather than a wrong answer.
+
+`liveCaptions`, `autoDescribe` and the other Chrome-level settings are also out
+of reach: they are preferences of a browser on this machine, and the person is
+reading in theirs.
+
 ## Driving it
 
 `bridge.js` answers the same method names as the ControlPort receiver, so a

@@ -237,3 +237,52 @@ def test_a_framed_page_without_adapters_says_so(receiver, monkeypatch):
 
     with pytest.raises(RuntimeError, match="no adapters"):
         REAL_ENSURE(receiver)
+
+
+def test_no_agent_task_is_offered_in_iframe_mode(receiver, monkeypatch):
+    """The agent drives a browser over CDP, and that browser is not the one
+    being read. Offering it sends unmatched sentences somewhere that cannot
+    help, and leaves stray tabs on this machine."""
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_agent_token", lambda self: "a-token")
+
+    actions = receiver._actions()
+
+    assert "task" not in actions and "stop" not in actions
+    assert "navigate" in actions and "activate" in actions
+
+
+def test_a_task_that_arrives_anyway_is_declined_not_driven(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_task",
+                        lambda self, u: pytest.fail("must not drive a browser"))
+
+    r = receiver.performAction("task", None, "find me a flight", {})
+
+    assert r["ok"] is False
+    assert "cannot run open-ended tasks" in r["detail"]
+
+
+def test_search_goes_through_the_host_not_the_frames_own_location(receiver, monkeypatch):
+    """_eval runs inside the frame now, so location.assign there would steer
+    this viewer around the proxy and leave the others behind."""
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: pytest.fail("must not steer the frame directly"))
+    seen = {}
+    monkeypatch.setattr(control.Receiver, "_navigate_iframe",
+                        lambda self, url: seen.setdefault("url", url) and None or {"ok": True})
+
+    r = receiver.performAction("search", "apples", None, {})
+
+    assert "google.com" in seen["url"] and "apples" in seen["url"]
+    assert "searching google for apples" in r["detail"]
+
+
+def test_no_stray_tab_is_opened_when_there_is_nothing_to_reacquire(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control, "list_tabs", lambda include_chrome=True: [])
+    monkeypatch.setattr(control, "new_tab",
+                        lambda *a, **k: pytest.fail("must not open a tab in iframe mode"))
+
+    assert receiver._reacquire() is False

@@ -286,6 +286,12 @@ class Receiver:
             self._target = tid
             _log(f"driven tab closed; now driving {(t.get('title') or '')[:40]!r}")
             return True
+        if IFRAME_HOST:
+            # No tab is being driven in this mode, so there is nothing to
+            # reacquire and a fresh one would just be a stray window nobody
+            # asked for — which is exactly what kept appearing.
+            _log("no tab to reacquire in iframe mode; the frame is the surface")
+            return False
         # Nothing left to drive: open a tab rather than fail every later call.
         try:
             self._target = _target_id_of(new_tab("about:blank"))
@@ -394,6 +400,13 @@ class Receiver:
         without a backend would swallow commands into a dead end."""
         base = ["scroll", "activate", "back", "forward", "navigate", "search",
                 "muteAudio"]
+        if IFRAME_HOST:
+            # No `task`. The agent drives a browser over CDP, and in this mode
+            # that browser is not the one being read: it would open tabs on this
+            # machine and act on documents the person never sees. Declaring it
+            # anyway would send every unmatched sentence somewhere that cannot
+            # help and leaves stray windows behind.
+            return base
         # `stop` is only meaningful where there is an agent to stop.
         return base + (["task", "stop"] if self._agent_token() else [])
 
@@ -755,6 +768,13 @@ class Receiver:
                 engine = m.group(1).lower()
                 q = q[:m.start()].strip()
             url = ENGINES[engine] + urllib.parse.quote_plus(q)
+            if IFRAME_HOST:
+                # Not location.assign: _eval now runs inside the frame, so that
+                # would steer this viewer's frame straight at the site, around
+                # the proxy — arriving unadapted, framing headers back in force,
+                # and every other viewer left behind.
+                r = self._navigate_iframe(url)
+                return {**r, "detail": f"searching {engine} for {q}"} if r.get("ok") else r
             self._eval("location.assign(%s); return 1" % json.dumps(url))
             return {"ok": True, "detail": f"searching {engine} for {q}"}
 
@@ -777,6 +797,13 @@ class Receiver:
                 return {"ok": False, "detail": f"could not stop the agent: {e}"}
             _log(f"stop requested; killed {killed}")
             return {"ok": True, "detail": "stopping"}
+
+        if actionId == "task" and IFRAME_HOST:
+            return {"ok": False,
+                    "detail": "I can change settings, move around and read this "
+                              "page, but I cannot run open-ended tasks while the "
+                              "page is in a frame — that needs a browser I can "
+                              "drive, and this one is on your screen, not mine."}
 
         if actionId == "task":
             utterance = text or target or ""
