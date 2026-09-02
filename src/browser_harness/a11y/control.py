@@ -1190,6 +1190,22 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
     async with websockets.serve(handler, host, port, max_size=8 * 1024 * 1024):
         _log(f"listening on ws://{host}:{port}  (profile service: {SERVICE_URL})")
         _log("point the Controller at it: connectRemoteReceiver('ws://%s:%d')" % (host, port))
+
+        if IFRAME_HOST and sync_on_connect:
+            # Adapt the session before anyone joins. The chat is opened on
+            # another machine here, so waiting for it would mean the first thing
+            # the person meets is an unadapted page — and they may be the least
+            # able to work around it.
+            try:
+                r = await asyncio.to_thread(
+                    Receiver(persist_scope=persist_scope, target=target)
+                    .syncProfileToSession)
+                _log(f"session ready: "
+                     f"{list(r.get('settings') or {}) or 'nothing recorded'}")
+            except Exception as e:
+                _log(f"could not prepare the session ({e}); "
+                     f"the first chat to connect will do it")
+
         await asyncio.Future()
 
 

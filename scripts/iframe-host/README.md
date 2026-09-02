@@ -23,6 +23,13 @@ it, and puts the receiver in iframe mode:
 AA_IFRAME=1 ./scripts/a11y up
 ```
 
+That opens the Framed page here and applies the profile to it before anyone
+connects, so the session is already adapted when the tester joins. It does not
+open a chat here: the chat belongs on the machine running the screen reader, and
+a second one on the same receiver would push its own settings and take replies
+meant for the first. A chat left open here from an earlier run is closed for the
+same reason.
+
 Or on its own, against a receiver you start yourself:
 
 ```bash

@@ -46,6 +46,7 @@ CHROME_MODE="${AA_CHROME_MODE:-dedicated}"
 # so the page under test has to be served from here rather than driven over CDP.
 IFRAME_MODE="${AA_IFRAME:-0}"
 IFRAME_PORT="${AA_IFRAME_PORT:-8124}"
+CONTROLLER_PORT="$(printf '%s' "$CONTROLLER_URL" | sed -n 's|.*:\([0-9][0-9]*\).*|\1|p')"
 if [ "$IFRAME_MODE" = "1" ]; then
   export BH_IFRAME_HOST="http://127.0.0.1:$IFRAME_PORT"
 fi
@@ -279,6 +280,48 @@ up() {
   fi
 
   echo; echo "layout"
+  local driven="" controller=""
+  if [ "$IFRAME_MODE" = "1" ]; then
+    # No chat window here. It belongs on the machine running the screen reader,
+    # and a second one on this socket would push its own settings and take the
+    # replies meant for the first. What this machine keeps is the Framed page:
+    # the receiver reads the session through it, and it is open and adapted
+    # before anyone connects from elsewhere.
+    driven="$(cd "$A11Y" && bounded 40 ./browser-harness <<PY 2>/dev/null | tail -1
+import time
+for t in list_tabs(include_chrome=False):
+    if "$IFRAME_PORT" in (t.get("url") or ""):
+        print(t["targetId"]); break
+else:
+    tid = new_tab("http://127.0.0.1:$IFRAME_PORT/")
+    time.sleep(3)
+    print(tid)
+PY
+)"
+    if [ -n "$driven" ]; then ok "Framed page open and waiting on :$IFRAME_PORT"
+    else bad "could not open the Framed page"; fi
+
+    # A chat left open here from an earlier run would connect to the same
+    # receiver as the one on the other machine: both would push their own
+    # settings, and a reply goes to whichever connected last. Matched on port
+    # and path, since the same server is localhost and 127.0.0.1.
+    local closed
+    closed="$(cd "$A11Y" && bounded 30 ./browser-harness <<PY 2>/dev/null | tail -1
+n = 0
+for t in list_tabs(include_chrome=False):
+    u = t.get("url") or ""
+    if ":$CONTROLLER_PORT/" in u and "chat" in u:
+        cdp("Target.closeTarget", targetId=t["targetId"])
+        n += 1
+print(n)
+PY
+)"
+    [ "${closed:-0}" != "0" ] && info "closed $closed chat tab(s) open here — one chat per receiver"
+    info "open the chat on the other machine: $CONTROLLER_URL"
+    iframe_layout_done=1
+  fi
+
+  if [ -z "${iframe_layout_done:-}" ]; then
   local ADOPT="True"
   [ "$CHROME_MODE" = "attach" ] && ADOPT="False"
   local ids
@@ -292,7 +335,6 @@ print(json.dumps(a11y_layout(controller_url="$CONTROLLER_URL",
                              adopt_current=$ADOPT)))
 PY
 )"
-  local driven controller
   driven="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["driven"])' 2>/dev/null)"
   controller="$(printf '%s' "$ids" | python3 -c 'import json,sys; print(json.load(sys.stdin)["controller"])' 2>/dev/null)"
   local actual_w pct was_clamped
@@ -303,16 +345,6 @@ PY
     ok "chat (${pct:-33}%) and driven page tiled side by side"
     [ "$was_clamped" = "True" ] && info "Chrome will not size a window below ${actual_w}px, so the chat is ${pct}% rather than the third asked for"
   else bad "could not lay out the windows"; info "continuing without a pinned target"; fi
-
-  if [ "$IFRAME_MODE" = "1" ] && [ -n "$driven" ]; then
-    # The driven window becomes the viewer. The receiver reads through it, and
-    # anything it changes is pushed to every other viewer — including the one on
-    # the hosted machine, which is the only screen that matters.
-    if (cd "$A11Y" && bounded 30 ./browser-harness <<PY >/dev/null 2>&1
-goto_url("http://127.0.0.1:$IFRAME_PORT/")
-PY
-    ); then ok "driven window showing the Framed page"
-    else bad "could not open the Framed page"; fi
   fi
 
   ( set +m; cd "$A11Y" && exec nohup ./browser-harness control --port 9333 ${driven:+--target "$driven"} \
