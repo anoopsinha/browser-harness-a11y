@@ -153,7 +153,11 @@ def test_a_reused_blank_driven_tab_is_never_closed(prefs_file, monkeypatch):
     assert "Target.closeTarget" not in closed
 
 
-# ---- following the profile ---------------------------------------------
+# ---- following a settings change ----------------------------------------
+# _follow_captions is no longer the profile's path — that is _follow_browser,
+# which reads liveCaptions from the resolved settings by name. What is left here
+# runs after a settings change, and may only act when the change was about
+# captions.
 
 @pytest.fixture
 def spy(monkeypatch):
@@ -166,16 +170,16 @@ def spy(monkeypatch):
 @pytest.mark.parametrize("settings", [{"showCaptions": True},
                                       {"autoCaptions": True},
                                       {"showCaptions": True, "autoCaptions": True}])
-def test_a_profile_that_reads_rather_than_hears_turns_it_on(settings, spy, prefs_file):
-    a11y._follow_captions(settings)
+def test_switching_captions_on_turns_it_on(settings, spy, prefs_file):
+    a11y._follow_captions(settings, explicit=True)
 
     assert spy == [True]
 
 
-def test_it_is_turned_off_again_when_the_profile_stops_asking(spy, prefs_file):
+def test_what_we_switched_on_comes_off_with_the_captions(spy, prefs_file):
     prefs_file.write_text(json.dumps({"ours": {"liveCaptions": True}}))
 
-    a11y._follow_captions({"largeText": True})
+    a11y._follow_captions({"showCaptions": False}, explicit=True)
 
     assert spy == [False]
 
@@ -183,7 +187,7 @@ def test_it_is_turned_off_again_when_the_profile_stops_asking(spy, prefs_file):
 def test_a_setting_they_made_themselves_is_not_ours_to_undo(spy, prefs_file):
     prefs_file.write_text(json.dumps({}))  # we never turned it on
 
-    r = a11y._follow_captions({"largeText": True})
+    r = a11y._follow_captions({"showCaptions": False})
 
     assert spy == []
     assert r == {"live_captions": "left alone"}
@@ -214,3 +218,27 @@ def test_following_a_profile_still_leaves_what_we_do_not_own(spy, prefs_file):
 
     assert spy == []
     assert r == {"live_captions": "left alone"}
+
+
+# ---- only a change about captions may move Chrome's ---------------------
+
+def test_an_unrelated_setting_leaves_live_caption_alone(spy, prefs_file):
+    """Reported: "smaller text" switched Live Caption on. Both callers pass the
+    settings active *after* the change, and on a hearing profile those always
+    mention captions — so intent read from them was never the person's."""
+    r = a11y._follow_captions({"showCaptions": True, "fontScale": 90}, explicit=False)
+
+    assert spy == []
+    assert r == {"live_captions": "left alone"}
+
+
+def test_a_change_about_captions_still_turns_it_on(spy, prefs_file):
+    a11y._follow_captions({"showCaptions": True}, explicit=True)
+
+    assert spy == [True]
+
+
+def test_a_change_about_captions_still_turns_it_off(spy, prefs_file):
+    a11y._follow_captions({"showCaptions": False}, explicit=True)
+
+    assert spy == [False]

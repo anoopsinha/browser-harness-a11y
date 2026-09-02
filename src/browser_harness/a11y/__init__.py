@@ -666,6 +666,14 @@ def _follow_captions(settings, explicit=False):
     and `explicit` says so: refusing it because we did not happen to be the ones
     who switched Live Caption on reads, correctly, as the thing being broken.
     """
+    if not explicit:
+        # Only a change about captions may move Chrome's. Both callers hand in
+        # the settings that are active *after* the change, and on a hearing
+        # profile those always mention captions — so deriving intent from them
+        # meant "smaller text" switched Live Caption back on, overriding the off
+        # the person had just asked for.
+        return {"live_captions": "left alone"}
+
     wanted = any(settings.get(k) for k in _WANTS_CAPTIONS)
     if wanted:
         return a11y_live_captions(True)
