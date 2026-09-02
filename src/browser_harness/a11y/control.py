@@ -121,6 +121,37 @@ def browser_setting_request(utterance):
     return None
 
 
+# Questions about the page itself, which the receiver can answer from the page
+# rather than by asking a model. The Controller's grammar has no rule for these,
+# so they arrive as open-ended tasks — and where there is no agent to take them,
+# "what is in the page" was refused by something that had the answer in hand.
+_ASK_OUTLINE_RE = re.compile(
+    r"\b(what(?:'s| is| are)?\s+(?:in|on)\s+(?:this|the)\s+page"
+    r"|what(?:'s| is)\s+(?:this|the)\s+page\s+about"
+    r"|what does (?:this|the) page say"
+    r"|describe (?:this|the) page"
+    r"|what(?:'s| is) here"
+    r"|(?:the )?(?:headings?|sections?|outline)\b"
+    r"|summar(?:y|ise|ize)\b)", re.I)
+_ASK_TEXT_RE = re.compile(
+    r"\bread\s+(?:me\s+)?(?:this|the|it)\b|\bread it (?:to me|out|aloud)\b"
+    r"|\bwhat does it say\b", re.I)
+_ASK_LINKS_RE = re.compile(
+    r"\b(what|which)\s+(links?|buttons?)\b|\bwhat can i (click|press|activate)\b"
+    r"|\bwhere can i go\b", re.I)
+
+
+def page_question(utterance):
+    """'outline', 'text', 'links' — or None when it is not about this page."""
+    if _ASK_LINKS_RE.search(utterance):
+        return "links"
+    if _ASK_TEXT_RE.search(utterance):
+        return "text"
+    if _ASK_OUTLINE_RE.search(utterance):
+        return "outline"
+    return None
+
+
 _STOP_RE = re.compile(
     r"^\s*(stop|stop it|stop that|stop please|please stop|cancel|abort|halt|"
     r"quit|never ?mind|forget it|enough)\s*[.!]*\s*$", re.I)
@@ -210,6 +241,39 @@ def _log(msg):
 #
 # _notify is deliberately the LATEST connection rather than the one that started
 # the task — a result posted to a socket that has since closed reaches nobody.
+# Answers that had nowhere to go. A task brings the driven tab to the front, and
+# the chat closes its socket while it is in the background — so the reply is
+# ready at the exact moment there is nobody to hand it to, and the person is
+# left watching "working on it". Held here and given to whoever connects next,
+# which is the same chat a second later.
+_PENDING_NOTES = []
+
+
+def hold_note(text):
+    """Keep an answer that could not be delivered."""
+    _PENDING_NOTES.append(text)
+
+
+async def flush_notes(ws):
+    """Hand over anything held, oldest first. Returns how many landed.
+
+    A failure puts the note back at the front rather than dropping it: losing it
+    here is the same silence as before, one connection later.
+    """
+    sent = 0
+    while _PENDING_NOTES:
+        held = _PENDING_NOTES.pop(0)
+        try:
+            await ws.send(json.dumps({"kind": NOTE, "text": held}))
+            sent += 1
+            _log(f"delivered a held note: {held[:70]!r}")
+        except Exception as e:
+            _PENDING_NOTES.insert(0, held)
+            _log(f"could not deliver the held note ({e})")
+            break
+    return sent
+
+
 _TASK = {
     "running": False,
     "cancelled": threading.Event(),
@@ -707,6 +771,40 @@ class Receiver:
             return {"ok": False,
                     "detail": f"could not reach the iframe host at {IFRAME_HOST} — {e}"}
 
+    def _answer_about_page(self, kind):
+        """Answer a question about the page from the page.
+
+        Reading is the one thing this mode is unambiguously good at, and the
+        answer is the page's own structure rather than a model's account of it.
+        """
+        try:
+            if kind == "links":
+                names = self._eval("return globalThis.__BH_A11Y.targets(25)") or []
+                if not names:
+                    return {"ok": True, "detail": "I cannot find anything to activate here."}
+                return {"ok": True,
+                        "detail": f"{len(names)} things you can activate: "
+                                  + ", ".join(names[:15])
+                                  + ("…" if len(names) > 15 else "")}
+            r = self.getContent("text" if kind == "text" else "outline") or {}
+            if r.get("error"):
+                return {"ok": True, "detail": "There is no readable content on this page."}
+            title = (r.get("title") or "this page").strip()
+            if kind == "text":
+                body = (r.get("text") or "").strip()
+                more = ""
+                if (r.get("totalChunks") or 1) > 1:
+                    more = f" (part 1 of {r['totalChunks']}; say 'read more' to go on)"
+                return {"ok": True, "detail": f"{title}. {body}{more}"}
+            heads = r.get("outline") or []
+            if not heads:
+                return {"ok": True, "detail": f"{title}. It has no headings to move between."}
+            return {"ok": True,
+                    "detail": f"{title}. {len(heads)} sections: " + ", ".join(heads[:20])
+                              + ("…" if len(heads) > 20 else "")}
+        except Exception as e:
+            return {"ok": False, "detail": f"I could not read the page — {e}"}
+
     def performAction(self, actionId, target=None, text=None, meta=None):
         # Answered before _ensure(): silencing the room must not wait on the
         # toolkit bundle being injected into a heavy page, nor fail with it.
@@ -799,6 +897,9 @@ class Receiver:
             return {"ok": True, "detail": "stopping"}
 
         if actionId == "task" and IFRAME_HOST:
+            asked = page_question(text or target or "")
+            if asked:
+                return self._answer_about_page(asked)
             return {"ok": False,
                     "detail": "I can change settings, move around and read this "
                               "page, but I cannot run open-ended tasks while the "
@@ -1045,13 +1146,16 @@ async def _serve(host, port, persist_scope, sync_on_connect, target):
                     await ws.send(json.dumps({"kind": NOTE, "text": text}))
                     _log(f"note sent: {text[:80]!r}")
                 except Exception as e:
-                    _log(f"note undeliverable ({e}) — controller likely gone")
+                    hold_note(text)
+                    _log(f"note held for the next connection ({e})")
             asyncio.run_coroutine_threadsafe(send(), loop)
 
         receiver._notify = notify
         # Later connections take over delivery, so a task that outlives a
         # refresh still reports to whoever is actually listening.
         _TASK["notify"] = notify
+
+        await flush_notes(ws)
         if sync_on_connect:
             try:
                 if IFRAME_HOST:

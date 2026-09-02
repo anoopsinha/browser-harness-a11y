@@ -8,6 +8,9 @@ was off, and they may have no way to look.
 The settings we can read back are answered here instead, where the claim is
 checked before it is made.
 """
+import asyncio
+import json
+
 import pytest
 
 from browser_harness.a11y import control
@@ -286,3 +289,62 @@ def test_no_stray_tab_is_opened_when_there_is_nothing_to_reacquire(receiver, mon
                         lambda *a, **k: pytest.fail("must not open a tab in iframe mode"))
 
     assert receiver._reacquire() is False
+
+
+# ---- an answer must outlive the connection that asked for it ------------
+# A task brings the driven tab to the front, and the chat closes its socket
+# while it is in the background. The reply is then ready at the exact moment
+# there is nobody to hand it to, and the person sits watching "working on it".
+
+class FakeSocket:
+    def __init__(self, fail_after=None):
+        self.sent, self.fail_after = [], fail_after
+
+    async def send(self, payload):
+        if self.fail_after is not None and len(self.sent) >= self.fail_after:
+            raise RuntimeError("socket closed")
+        self.sent.append(json.loads(payload))
+
+
+@pytest.fixture(autouse=True)
+def empty_queue(monkeypatch):
+    monkeypatch.setattr(control, "_log", lambda *a, **k: None)
+    control._PENDING_NOTES.clear()
+    yield
+    control._PENDING_NOTES.clear()
+
+
+def test_a_held_answer_reaches_the_next_connection():
+    control.hold_note("I searched Google for apples.")
+
+    ws = FakeSocket()
+    assert asyncio.run(control.flush_notes(ws)) == 1
+    assert ws.sent[0]["text"] == "I searched Google for apples."
+    assert control._PENDING_NOTES == []
+
+
+def test_answers_are_delivered_oldest_first():
+    control.hold_note("first")
+    control.hold_note("second")
+
+    ws = FakeSocket()
+    asyncio.run(control.flush_notes(ws))
+
+    assert [m["text"] for m in ws.sent] == ["first", "second"]
+
+
+def test_a_second_failure_keeps_the_answer_rather_than_dropping_it():
+    """Losing it here is the same silence as before, one connection later."""
+    control.hold_note("first")
+    control.hold_note("second")
+
+    ws = FakeSocket(fail_after=1)
+    assert asyncio.run(control.flush_notes(ws)) == 1
+
+    assert control._PENDING_NOTES == ["second"]
+
+
+def test_nothing_held_sends_nothing():
+    ws = FakeSocket()
+    assert asyncio.run(control.flush_notes(ws)) == 0
+    assert ws.sent == []
