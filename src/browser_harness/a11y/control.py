@@ -69,6 +69,46 @@ ENGINES = {
 # Deliberately narrow: the WHOLE utterance must be a stop word. "stop the video"
 # and "stop autoplay" are real instructions for the agent, and only an utterance
 # that is nothing but the intent to halt is treated as one.
+# Browser-level settings, recognised straight from the utterance. These reach
+# here only when the Controller's grammar did not match — "turn off live
+# captioning" misses its `captions?` — and the lane behind it is a model, which
+# when asked to turn something off will report that it did. It has: Live Caption
+# stayed on while the person was told it was off.
+#
+# So the settings we can read back are answered here instead, where the claim is
+# checked before it is made. Everything else still goes to the agent.
+_BROWSER_PHRASES = (
+    (re.compile(r"\blive\s+caption(s|ing)?\b", re.I), "liveCaptions"),
+    (re.compile(r"\bimage\s+description(s)?\b|\bdescribe\s+(the\s+)?images?\b", re.I),
+     "autoDescribe"),
+    (re.compile(r"\b(caret|text.cursor)\s*brows(e|ing)\b"
+                r"|\bnavigate\b.*\btext\s+cursor\b", re.I), "caretBrowsing"),
+    (re.compile(r"\bhide\s+profanit(y|ies)\b|\bprofanit(y|ies)\b", re.I), "hideProfanity"),
+    (re.compile(r"\blive\s+translat(e|ion|ing)\b", re.I), "liveTranslate"),
+)
+# An imperative, not a mention: "turn off live captions" is an instruction,
+# "what do live captions do" is a question and belongs to the agent.
+_TURN_OFF_RE = re.compile(
+    r"^\s*(please\s+)?(can you\s+)?(turn|switch|shut|put)?\s*"
+    r"(off|no|stop|disable|hide|remove|kill)\b|\boff\s*[.!]?\s*$", re.I)
+_TURN_ON_RE = re.compile(
+    r"^\s*(please\s+)?(can you\s+)?(turn|switch|put)?\s*"
+    r"(on|enable|start|show|activate|give me)\b|\bon\s*[.!]?\s*$", re.I)
+
+
+def browser_setting_request(utterance):
+    """(setting, wanted) when this plainly asks for one, else None."""
+    for pattern, name in _BROWSER_PHRASES:
+        if not pattern.search(utterance):
+            continue
+        if _TURN_OFF_RE.search(utterance):
+            return name, False
+        if _TURN_ON_RE.search(utterance):
+            return name, True
+        return None  # named without asking for a change: a question
+    return None
+
+
 _STOP_RE = re.compile(
     r"^\s*(stop|stop it|stop that|stop please|please stop|cancel|abort|halt|"
     r"quit|never ?mind|forget it|enough)\s*[.!]*\s*$", re.I)
@@ -576,6 +616,20 @@ class Receiver:
             if _TASK["running"] and _STOP_RE.match(utterance):
                 _log(f"heard {utterance.strip()!r} as a stop, not a new task")
                 return self.performAction("stop")
+            hit = browser_setting_request(utterance)
+            if hit:
+                name, want = hit
+                r = a11y_chrome_apply(**{name: want}).get(name, {})
+                state, label = r.get("state"), _CHROME_CONTROLS[name]
+                _log(f"answered {utterance.strip()!r} directly: {name} -> {state}")
+                if state in ("on", "off") and (state == "on") == want:
+                    return {"ok": True,
+                            "detail": f"{label} is {'on' if want else 'off'}"}
+                # Say what is actually true. The person may have no way to look.
+                return {"ok": False,
+                        "detail": r.get("detail")
+                                  or f"could not change {label}; it is {state}"}
+
             # meta.returnToController defaults true (PROTOCOL.md); the person can
             # turn it off in the Controller when they would rather stay on the
             # page the task acted on.
