@@ -110,17 +110,22 @@ broadcasts writes — settings, navigation, activate and scroll — through the 
 and answers reads from a viewer open on this machine, since every viewer renders
 the same page with the same settings.
 
+### Open-ended tasks
+
+They work, and answer the way they do on a tab: an acknowledgement first, the
+model's summary as a note when it finishes.
+
+What changes is where the agent is told to look. The page is inside the frame,
+which is same-origin with the page holding it, so the agent reads it through
+`document.getElementById('frame').contentDocument`. Navigation is the part it
+must not do itself — a `goto_url` here moves this screen alone, around the
+proxy, while the person's copy stays where it was — so it is told to post the
+address to the host, which moves every viewer at once.
+
 ### What this mode will not do
 
-`describeCapabilities` withholds `task`, so the chat does not offer open-ended
-agent work. The agent drives a browser over CDP, and in this mode that browser
-is not the one being read — it would act on documents the person never sees and
-leave stray tabs behind on the operator's machine. Settings, navigation, search,
-activate, scroll and reading all work; a sentence the grammar cannot place gets
-an explanation rather than a wrong answer.
-
-`liveCaptions`, `autoDescribe` and the other Chrome-level settings are also out
-of reach: they are preferences of a browser on this machine, and the person is
+`liveCaptions`, `autoDescribe` and the other Chrome-level settings are out of
+reach: they are preferences of a browser on this machine, and the person is
 reading in theirs.
 
 ## Driving it

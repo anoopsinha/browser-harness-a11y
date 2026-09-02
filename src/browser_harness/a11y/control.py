@@ -464,13 +464,6 @@ class Receiver:
         without a backend would swallow commands into a dead end."""
         base = ["scroll", "activate", "back", "forward", "navigate", "search",
                 "muteAudio"]
-        if IFRAME_HOST:
-            # No `task`. The agent drives a browser over CDP, and in this mode
-            # that browser is not the one being read: it would open tabs on this
-            # machine and act on documents the person never sees. Declaring it
-            # anyway would send every unmatched sentence somewhere that cannot
-            # help and leaves stray windows behind.
-            return base
         # `stop` is only meaningful where there is an agent to stop.
         return base + (["task", "stop"] if self._agent_token() else [])
 
@@ -896,30 +889,6 @@ class Receiver:
             _log(f"stop requested; killed {killed}")
             return {"ok": True, "detail": "stopping"}
 
-        if actionId == "task" and IFRAME_HOST:
-            asked = page_question(text or target or "")
-            if asked:
-                answer = self._answer_about_page(asked)
-                if not answer.get("ok"):
-                    return answer
-                # As a note, not as this reply. `ok: true` on a task means
-                # "started, the result follows" — it is what the agent path
-                # returns before going away to work — so the Controller shows
-                # the acknowledgement and waits for a note. Answering in the
-                # reply alone left it waiting for one that never came, which is
-                # what a hang on the other machine looks like.
-                text_out = answer.get("detail") or ""
-                notify = self._notify or _TASK.get("notify")
-                if notify:
-                    notify(text_out)
-                    return {"ok": True, "detail": "reading the page"}
-                return {"ok": True, "detail": text_out}
-            return {"ok": False,
-                    "detail": "I can change settings, move around and read this "
-                              "page, but I cannot run open-ended tasks while the "
-                              "page is in a frame — that needs a browser I can "
-                              "drive, and this one is on your screen, not mine."}
-
         if actionId == "task":
             utterance = text or target or ""
             # Only while something is running: with nothing to halt, "stop" is
@@ -1005,7 +974,29 @@ class Receiver:
         # the Controller instead of the page the person is on, and answers
         # confidently about the wrong document.
         where = ""
-        if self._target:
+        if IFRAME_HOST:
+            # The page is inside a frame served from localhost, and the person
+            # is reading their own copy of it somewhere else. Reading the frame
+            # here is fine — every viewer renders the same page — but a
+            # navigation has to go through the host or it moves this screen
+            # alone, around the proxy, and theirs stays where it was.
+            viewer = self._iframe_viewer()
+            where = (
+                f"WORKING PAGE: the page under test is inside an iframe on "
+                f"{IFRAME_HOST}/ "
+                + (f"(browser-harness targetId {viewer}; call switch_tab('{viewer}') "
+                   f"first). " if viewer else ". ")
+                + f"Read it with: js(\"document.getElementById('frame')"
+                  f".contentDocument.body.innerText\") — the frame is same-origin "
+                f"with its holder, so its document is reachable that way. "
+                f"To open a different page, do NOT navigate and do NOT call "
+                f"new_tab: post the address to the host instead, which moves "
+                f"every viewer including the person's — "
+                f"curl -s -X POST {IFRAME_HOST}/state "
+                f"-H 'Content-Type: application/json' "
+                f"-d '{{\"url\":\"https://example.com\"}}' — then re-read the "
+                f"frame. Never navigate the holder page itself. ")
+        elif self._target:
             try:
                 url = self._eval("return location.href")
                 where = (

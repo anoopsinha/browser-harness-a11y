@@ -242,30 +242,6 @@ def test_a_framed_page_without_adapters_says_so(receiver, monkeypatch):
         REAL_ENSURE(receiver)
 
 
-def test_no_agent_task_is_offered_in_iframe_mode(receiver, monkeypatch):
-    """The agent drives a browser over CDP, and that browser is not the one
-    being read. Offering it sends unmatched sentences somewhere that cannot
-    help, and leaves stray tabs on this machine."""
-    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
-    monkeypatch.setattr(control.Receiver, "_agent_token", lambda self: "a-token")
-
-    actions = receiver._actions()
-
-    assert "task" not in actions and "stop" not in actions
-    assert "navigate" in actions and "activate" in actions
-
-
-def test_a_task_that_arrives_anyway_is_declined_not_driven(receiver, monkeypatch):
-    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
-    monkeypatch.setattr(control.Receiver, "_task",
-                        lambda self, u: pytest.fail("must not drive a browser"))
-
-    r = receiver.performAction("task", None, "find me a flight", {})
-
-    assert r["ok"] is False
-    assert "cannot run open-ended tasks" in r["detail"]
-
-
 def test_search_goes_through_the_host_not_the_frames_own_location(receiver, monkeypatch):
     """_eval runs inside the frame now, so location.assign there would steer
     this viewer around the proxy and leave the others behind."""
@@ -350,37 +326,56 @@ def test_nothing_held_sends_nothing():
     assert ws.sent == []
 
 
-def test_a_page_answer_comes_back_as_a_note(monkeypatch):
-    """`ok: true` on a task means "started, the result follows" — the shape the
-    agent path returns before going away to work. Answering in the reply alone
-    left the chat waiting for a note that never came."""
-    r = control.Receiver.__new__(control.Receiver)
-    r._target, r._sid, r._persist_scope = "driven", "s1", None
-    notes = []
-    r._notify = notes.append
+# ---- the agent works here too -------------------------------------------
+# Withholding it was wrong: an open-ended sentence should reach the model and
+# come back summarised, exactly as it does when the page is a tab. What differs
+# is only where the page is, and that belongs in the agent's instructions.
+
+def test_the_agent_is_offered_in_iframe_mode(receiver, monkeypatch):
     monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
-    monkeypatch.setattr(control, "_log", lambda *a, **k: None)
-    monkeypatch.setattr(control.Receiver, "_ensure", lambda self: None)
-    monkeypatch.setattr(control.Receiver, "_answer_about_page",
-                        lambda self, kind: {"ok": True, "detail": "Apple. 38 sections: …"})
+    monkeypatch.setattr(control.Receiver, "_agent_token", lambda self: "a-token")
 
-    out = r.performAction("task", None, "what is on this page", {})
-
-    assert out == {"ok": True, "detail": "reading the page"}
-    assert notes == ["Apple. 38 sections: …"]
+    assert "task" in receiver._actions()
+    assert "stop" in receiver._actions()
 
 
-def test_with_nobody_to_notify_the_answer_rides_the_reply(monkeypatch):
-    r = control.Receiver.__new__(control.Receiver)
-    r._target, r._sid, r._persist_scope = "driven", "s1", None
-    r._notify = None
+def test_an_open_ended_sentence_reaches_the_agent(receiver, monkeypatch):
     monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
-    monkeypatch.setattr(control, "_log", lambda *a, **k: None)
-    monkeypatch.setitem(control._TASK, "notify", None)
-    monkeypatch.setattr(control.Receiver, "_ensure", lambda self: None)
-    monkeypatch.setattr(control.Receiver, "_answer_about_page",
-                        lambda self, kind: {"ok": True, "detail": "the answer"})
+    seen = {}
+    monkeypatch.setattr(control.Receiver, "_task",
+                        lambda self, u: seen.setdefault("utterance", u) or {"ok": True})
 
-    out = r.performAction("task", None, "what is on this page", {})
+    receiver.performAction("task", None, "summarise this article", {})
 
-    assert out["detail"] == "the answer"
+    assert seen["utterance"] == "summarise this article"
+
+
+def test_the_agent_is_told_to_navigate_through_the_host(receiver, monkeypatch):
+    """A navigation done here moves this screen alone, around the proxy, while
+    the person's copy stays where it was."""
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    monkeypatch.setattr(control.Receiver, "_iframe_viewer", lambda self: "viewer-tab")
+    monkeypatch.setattr(control.Receiver, "_agent_token", lambda self: "a-token")
+    sent = {}
+    monkeypatch.setattr(control.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("no agent service")))
+    monkeypatch.setattr(control, "AGENT_URL", "http://127.0.0.1:8787/stream")
+
+    # the prompt is built before the request goes out; capture it from the body
+    class Boom(Exception):
+        pass
+
+    def capture(req, timeout=None):
+        sent["body"] = req.data.decode()
+        raise Boom()
+
+    monkeypatch.setattr(control.urllib.request, "urlopen", capture)
+    try:
+        receiver._task("summarise this")
+    except Exception:
+        pass
+
+    body = sent.get("body", "")
+    assert "iframe on http://127.0.0.1:8124/" in body
+    assert "/state" in body and "do NOT call" in body
+    assert "switch_tab('viewer-tab')" in body
