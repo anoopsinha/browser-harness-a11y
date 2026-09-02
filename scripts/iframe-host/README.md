@@ -1,0 +1,92 @@
+# Iframe host
+
+Serves any page from localhost, adapted and drivable, so a screen reader on a
+hosted Windows VM can read it.
+
+Built for **Assistiv Labs**, which runs real NVDA and JAWS on real Windows and
+reaches this machine only through a localhost tunnel. That constraint decides
+the design: the screen reader reads whatever is in *its* browser, so the page
+under test has to render there — which rules out CDP, because the harness drives
+a Chrome on this machine that the VM cannot see.
+
+So control moves into the page. This proxy fetches a URL, serves it from
+localhost, and injects the toolkit's adapters plus a small bridge. The chat and
+the page under test end up in one accessibility tree, and the adaptations are
+applied by code running inside the page rather than over a wire.
+
+## Running it
+
+```bash
+python3 scripts/build_a11y.py            # adapters, if not already built
+python3 scripts/iframe-host/server.py    # http://127.0.0.1:8124/
+```
+
+Expose **8124** through the Assistiv Labs tunnel alongside the chat's **4000**.
+Both are needed: the chat is one origin, the proxied page another.
+
+`/` is a test harness — a URL bar, adapter buttons and a result pane — useful on
+its own for checking an adapter against a real site before involving a screen
+reader.
+
+## What it does to a page
+
+| step | why |
+| --- | --- |
+| Drops `X-Frame-Options` and `frame-ancestors` | the reason most pages cannot be framed at all |
+| Injects `<base href>` | so images, CSS and scripts still load from the real origin |
+| Injects the adapter bundle | the toolkit runs inside the page, no CDP needed |
+| Injects `bridge.js` | lets the surrounding page drive it by postMessage |
+
+Only the top-level HTML is proxied. Everything else loads from where it always
+did, which keeps the page behaving like itself.
+
+The injected `<script src>` is an absolute URL, deliberately: a relative one is
+resolved against the `<base>` that was just set, so the page loads perfectly and
+quietly fetches its adapters from the proxied site, where they do not exist.
+
+## Driving it
+
+`bridge.js` answers the same method names as the ControlPort receiver, so a
+caller can treat an iframe and a remote receiver as two implementations of one
+thing:
+
+```js
+frame.contentWindow.postMessage(
+  { kind: 'bh-iframe-req', id: '1', method: 'applySettings',
+    args: [{ fontScale: 150 }] }, '*');
+
+// { kind: 'bh-iframe-res', id: '1', result: { applied: {...}, previous: {...} } }
+```
+
+`describeCapabilities`, `getContext`, `applySettings`, `applyProfile`,
+`undoLast`, `getContent`, `performAction` (`activate`, `scroll`, `back`,
+`forward`, `navigate`). The frame announces `bh-iframe-ready` when its scripts
+have run — there is no reliable way for the host to know that otherwise, and
+polling for it races on every page load.
+
+It is postMessage only, never `contentDocument`, so it keeps working when the
+chat is served from a different port.
+
+## What breaks
+
+Measured against real sites, not assumed:
+
+- **Signed-in pages.** A proxied request carries none of the browser's cookies,
+  so you get the logged-out view. Most accessibility problems live behind a
+  login, and this does not reach them.
+- **Frame-busting.** Pages that check `window.top !== window.self` and escape.
+- **Absolute-path fetches.** `<base>` fixes markup URLs; it does not affect
+  `fetch('/api/...')`, which still resolves against the proxy and 404s.
+- **Single-page navigation.** Following a link inside the frame leaves the proxy
+  and hits the real origin, unadapted, where framing headers apply again. Route
+  navigations back through `/go` — `performAction('navigate')` does.
+
+Treat it as a way to exercise adapters against a curated corpus, not as a
+general browser.
+
+## Security
+
+The proxied page's JavaScript runs in this proxy's origin. Keep it on its own
+port — `8124`, not the chat's `4000` — so a fetched page cannot read the chat's
+storage, which holds the person's profile. Do not sign in to anything through
+it, and do not put anything else on this port.
