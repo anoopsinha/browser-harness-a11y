@@ -254,8 +254,8 @@ def test_search_goes_through_the_host_not_the_frames_own_location(receiver, monk
 
     r = receiver.performAction("search", "apples", None, {})
 
-    assert "google.com" in seen["url"] and "apples" in seen["url"]
-    assert "searching google for apples" in r["detail"]
+    assert "bing.com" in seen["url"] and "apples" in seen["url"]
+    assert "searching bing for apples" in r["detail"]
 
 
 def test_no_stray_tab_is_opened_when_there_is_nothing_to_reacquire(receiver, monkeypatch):
@@ -379,3 +379,53 @@ def test_the_agent_is_told_to_navigate_through_the_host(receiver, monkeypatch):
     assert "iframe on http://127.0.0.1:8124/" in body
     assert "/state" in body and "do NOT call" in body
     assert "switch_tab('viewer-tab')" in body
+
+
+# ---- which engine can survive being framed -------------------------------
+# Stripping X-Frame-Options gets the document delivered; it does not stop a page
+# blanking itself once it sees it is framed. Measured in a browser: Bing renders,
+# Google and DuckDuckGo come back with a title and an empty body.
+
+@pytest.fixture
+def searcher(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "http://127.0.0.1:8124")
+    seen = {}
+    monkeypatch.setattr(control.Receiver, "_navigate_iframe",
+                        lambda self, url: seen.update(url=url) or {"ok": True})
+    receiver.seen = seen
+    return receiver
+
+
+def test_a_framed_search_defaults_to_bing(searcher):
+    r = searcher.performAction("search", "apples", None, {})
+
+    assert "bing.com" in searcher.seen["url"]
+    assert r["detail"] == "searching bing for apples"
+
+
+def test_an_engine_that_cannot_be_framed_is_swapped_and_said_so(searcher):
+    """Silently handing someone an empty results page is worse than telling
+    them why they got a different engine."""
+    r = searcher.performAction("search", "apples on google", None, {})
+
+    assert "bing.com" in searcher.seen["url"]
+    assert "google will not display in a frame" in r["detail"]
+
+
+def test_an_engine_that_works_in_a_frame_is_honoured(searcher):
+    r = searcher.performAction("search", "apples on wikipedia", None, {})
+
+    assert "wikipedia.org" in searcher.seen["url"]
+    assert "will not display" not in r["detail"]
+
+
+def test_on_a_tab_google_is_still_the_default(receiver, monkeypatch):
+    monkeypatch.setattr(control, "IFRAME_HOST", "")
+    seen = {}
+    monkeypatch.setattr(control.Receiver, "_eval",
+                        lambda self, e: seen.setdefault("eval", e))
+
+    r = receiver.performAction("search", "apples", None, {})
+
+    assert "google.com" in seen["eval"]
+    assert r["detail"] == "searching google for apples"

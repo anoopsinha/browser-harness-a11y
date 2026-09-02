@@ -74,6 +74,14 @@ ENGINES = {
     "wikipedia": "https://en.wikipedia.org/w/index.php?search=",
 }
 
+# Engines that will not render inside a frame. Stripping X-Frame-Options gets
+# the document delivered, but these blank themselves once they see they are
+# framed — measured: title present, body empty. Bing renders normally, so it is
+# the default while the page under test is a frame, and the substitution is said
+# out loud rather than leaving someone reading an empty result page.
+_FRAME_HOSTILE = {"google", "duckduckgo", "ddg"}
+_FRAME_ENGINE = "bing"
+
 # Typed "stop" arrives as a task, because the Controller sends everything
 # unparsed straight through. Spawning a second agent to reason about the word
 # while the first keeps driving the browser is the opposite of what was asked.
@@ -854,9 +862,14 @@ class Receiver:
             # "search for apples on google" arrives as the whole phrase, because
             # the grammar captures everything after "search for". Honour a named
             # engine rather than searching for its name.
-            engine, m = "google", re.search(r"\s+(?:on|in|with|using)\s+(\w+)\s*$", q, re.I)
+            default = _FRAME_ENGINE if IFRAME_HOST else "google"
+            engine, m = default, re.search(r"\s+(?:on|in|with|using)\s+(\w+)\s*$", q, re.I)
+            asked_for = None
             if m and m.group(1).lower() in ENGINES:
-                engine = m.group(1).lower()
+                engine = asked_for = m.group(1).lower()
+            swapped = None
+            if IFRAME_HOST and engine in _FRAME_HOSTILE:
+                swapped, engine = engine, _FRAME_ENGINE
                 q = q[:m.start()].strip()
             url = ENGINES[engine] + urllib.parse.quote_plus(q)
             if IFRAME_HOST:
@@ -865,7 +878,12 @@ class Receiver:
                 # the proxy — arriving unadapted, framing headers back in force,
                 # and every other viewer left behind.
                 r = self._navigate_iframe(url)
-                return {**r, "detail": f"searching {engine} for {q}"} if r.get("ok") else r
+                if not r.get("ok"):
+                    return r
+                said = f"searching {engine} for {q}"
+                if swapped and asked_for:
+                    said += f" — {swapped} will not display in a frame"
+                return {**r, "detail": said}
             self._eval("location.assign(%s); return 1" % json.dumps(url))
             return {"ok": True, "detail": f"searching {engine} for {q}"}
 

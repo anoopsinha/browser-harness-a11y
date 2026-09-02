@@ -122,6 +122,22 @@ must not do itself — a `goto_url` here moves this screen alone, around the
 proxy, while the person's copy stays where it was — so it is told to post the
 address to the host, which moves every viewer at once.
 
+### Search
+
+Bing, not Google, while the page is a frame. Stripping `X-Frame-Options` gets a
+document delivered; it does not stop a page blanking itself once it sees it is
+framed. Measured in a browser:
+
+| engine | in a frame |
+| --- | --- |
+| Bing | renders normally |
+| Google | title, empty body |
+| DuckDuckGo | title, empty body |
+
+Asking for one of the others by name gets Bing and is told why, rather than an
+empty results page and no explanation. On a tab nothing changes: Google stays
+the default.
+
 ### What this mode will not do
 
 `liveCaptions`, `autoDescribe` and the other Chrome-level settings are out of
