@@ -79,6 +79,15 @@ fi
 export ONBOARD_MODE="${AA_ONBOARD_MODE:-remote}"
 export TOOLKIT_URL="${AA_TOOLKIT_URL:-http://127.0.0.1:8080}"
 
+# The agent's model, pinned rather than left to the CLI's default. Without this
+# an upgrade can change which model answers, and a change in how the agent
+# behaves mid-study is then impossible to attribute. run.sh reads only the API
+# key out of its own .env, so this has to reach it through the environment.
+if [ -f "$A11Y/.env" ]; then
+  GEMINI_MODEL="$(sed -n 's/^GEMINI_MODEL=//p' "$A11Y/.env" | head -1 | tr -d '"'"'"' ')"
+  [ -n "${GEMINI_MODEL:-}" ] && export GEMINI_MODEL
+fi
+
 # Elapsed seconds since `up` started, so a slow step names itself.
 T0=$(date +%s)
 el() { printf '%3ds' "$(( $(date +%s) - T0 ))"; }
