@@ -154,6 +154,8 @@ class Handler(BaseHTTPRequestHandler):
         route = parsed.path
         if route == "/":
             return self._send(200, (HERE / "host.html").read_text())
+        if route == "/split":
+            return self._send(200, (HERE / "split.html").read_text())
         if route == "/_bridge.js":
             return self._send(200, (HERE / "bridge.js").read_text(),
                               "application/javascript; charset=utf-8")

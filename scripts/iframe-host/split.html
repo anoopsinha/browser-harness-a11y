@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat and page</title>
+<style>
+  :root { color-scheme: light dark; --split: 33%; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; font: 13px/1.4 system-ui, sans-serif;
+         display: grid; grid-template-columns: var(--split) 6px 1fr; }
+
+  /* Panels, not floats: each iframe fills its column and scrolls itself, so a
+     long page never pushes the other panel off the screen. */
+  .panel { min-width: 0; height: 100vh; display: flex; flex-direction: column; }
+  iframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; }
+
+  /* The handle is a real separator: it is focusable and answers arrow keys,
+     because someone using this by keyboard has as much reason to resize it as
+     someone with a mouse. */
+  #handle {
+    background: #8883; cursor: col-resize; border: 0; padding: 0;
+    touch-action: none;
+  }
+  #handle:hover, #handle:focus-visible { background: #06c; outline: none; }
+  #handle:focus-visible { box-shadow: 0 0 0 2px #06c; }
+  body.dragging { user-select: none; }
+  body.dragging iframe { pointer-events: none; }   /* or the frame eats the drag */
+
+  @media (max-width: 700px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 40vh 6px 1fr; }
+    #handle { cursor: row-resize; }
+  }
+</style>
+</head>
+<body>
+  <div class="panel">
+    <iframe id="chat" title="Chat"></iframe>
+  </div>
+
+  <div id="handle" role="separator" tabindex="0"
+       aria-orientation="vertical" aria-label="Resize the chat panel"
+       aria-valuemin="20" aria-valuemax="70" aria-valuenow="33"></div>
+
+  <div class="panel">
+    <iframe id="page" title="Page under test" src="/"></iframe>
+  </div>
+
+<script>
+  // The chat is served by the toolkit on another port, so its address is a
+  // parameter rather than a constant: through a tunnel it may not be the same
+  // host this page came from.
+  const params = new URLSearchParams(location.search);
+  const chatUrl = params.get('chat') || 'http://localhost:4000/chat';
+  document.getElementById('chat').src = chatUrl;
+
+  const handle = document.getElementById('handle');
+  const MIN = 20, MAX = 70;
+  const vertical = () => matchMedia('(max-width: 700px)').matches;
+
+  function setSplit(pct) {
+    pct = Math.min(MAX, Math.max(MIN, pct));
+    document.documentElement.style.setProperty('--split', pct + '%');
+    handle.setAttribute('aria-valuenow', Math.round(pct));
+    try { localStorage.setItem('bh-split', String(pct)); } catch (e) {}
+  }
+
+  try {
+    const saved = parseFloat(localStorage.getItem('bh-split'));
+    if (Number.isFinite(saved)) setSplit(saved);
+  } catch (e) {}   // a private window, or storage refused — the default stands
+
+  let dragging = false;
+  const from = (e) => vertical()
+    ? (e.clientY / window.innerHeight) * 100
+    : (e.clientX / window.innerWidth) * 100;
+
+  handle.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add('dragging');
+  });
+  handle.addEventListener('pointermove', (e) => { if (dragging) setSplit(from(e)); });
+  const stop = (e) => {
+    if (!dragging) return;
+    dragging = false;
+    try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
+    document.body.classList.remove('dragging');
+  };
+  handle.addEventListener('pointerup', stop);
+  handle.addEventListener('pointercancel', stop);
+
+  handle.addEventListener('keydown', (e) => {
+    const now = parseFloat(handle.getAttribute('aria-valuenow'));
+    const step = e.shiftKey ? 10 : 2;
+    const keys = { ArrowLeft: -step, ArrowUp: -step, ArrowRight: step, ArrowDown: step,
+                   Home: MIN - now, End: MAX - now };
+    if (!(e.key in keys)) return;
+    e.preventDefault();
+    setSplit(now + keys[e.key]);
+  });
+</script>
+</body>
+</html>

@@ -61,6 +61,27 @@ The injected `<script src>` is an absolute URL, deliberately: a relative one is
 resolved against the `<base>` that was just set, so the page loads perfectly and
 quietly fetches its adapters from the proxied site, where they do not exist.
 
+## Both panels in one page
+
+`/split` puts the chat and the page under test side by side in a single
+document: the chat on the left at a third, the page on the right. One URL for
+the tester to open, and — because both are frames of the same document rather
+than two windows — a screen reader moves between them without leaving the page.
+
+```
+http://localhost:8124/split
+http://localhost:8124/split?chat=http://localhost:4000/chat   # if the chat is elsewhere
+```
+
+The chat's address is a parameter rather than a constant, since through a tunnel
+it may not share a host with this page. Both ports have to be reachable from
+wherever the page is opened.
+
+The divider is a real `separator`: focusable, with arrow keys to move it, Home
+and End for the limits, and Shift for larger steps — someone working by keyboard
+has as much reason to resize it as someone with a mouse. The position is
+remembered per browser. Below 700px the split becomes horizontal.
+
 ## The current page is server state
 
 Two browsers render the page under test: the operator's, and the one on the
