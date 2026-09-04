@@ -35,7 +35,11 @@
 </head>
 <body>
   <div class="panel">
-    <iframe id="chat" title="Chat"></iframe>
+    <!-- Without allow, a cross-origin frame gets no microphone: speech
+         recognition and dictation simply never start, with no error the person
+         can see. autoplay lets the chat speak its replies back. -->
+    <iframe id="chat" title="Chat"
+            allow="microphone *; autoplay *"></iframe>
   </div>
 
   <div id="handle" role="separator" tabindex="0"
@@ -57,6 +61,25 @@
   const params = new URLSearchParams(location.search);
   const chatUrl = params.get('chat') || 'http://localhost:4000/chat';
   document.getElementById('chat').src = chatUrl;
+
+  // The chat is where someone types and talks, so it starts with focus — and
+  // its shortcuts are bound on its own document, so they only reach it when
+  // focus is inside this frame.
+  // The element, not its contentWindow: focusing a cross-origin window is
+  // ignored silently, while focusing the frame itself delegates inward.
+  document.getElementById('chat').addEventListener('load', () => {
+    try { document.getElementById('chat').focus(); } catch (e) {}
+  });
+
+  // Ctrl-Space belongs to the chat, but a press landing out here never reaches
+  // it. Hand focus over so the next one does. The keystroke itself cannot be
+  // forwarded — a cross-origin frame will not accept a synthetic event — so the
+  // press that arrives while the page panel has focus is spent moving focus.
+  addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    if (e.code !== 'Space' && e.key !== ' ') return;
+    try { document.getElementById('chat').focus(); } catch (err) {}
+  });
 
   const handle = document.getElementById('handle');
   const MIN = 20, MAX = 70;

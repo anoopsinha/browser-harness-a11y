@@ -77,6 +77,17 @@ The chat's address is a parameter rather than a constant, since through a tunnel
 it may not share a host with this page. Both ports have to be reachable from
 wherever the page is opened.
 
+The chat frame carries `allow="microphone *; autoplay *"`. Without it a
+cross-origin frame gets no microphone at all, so dictation and speech
+recognition never start — and nothing says why, which is the worst way for a
+voice feature to fail.
+
+It also takes focus when the page loads, and Ctrl-Space out in the page panel
+hands focus back to it. The chat binds its shortcuts on its own document, so
+they only reach it when focus is inside that frame; the keystroke itself cannot
+be forwarded, since a cross-origin frame will not accept a synthetic event, so
+that press is spent moving focus and the next one works.
+
 The divider is a real `separator`: focusable, with arrow keys to move it, Home
 and End for the limits, and Shift for larger steps — someone working by keyboard
 has as much reason to resize it as someone with a mouse. The position is
