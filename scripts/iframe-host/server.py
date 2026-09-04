@@ -190,10 +190,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         route = parsed.path
-        if route == "/":
-            return self._send(200, (HERE / "host.html").read_text())
-        if route == "/split":
+        if route in ("/", "/split"):
+            # The side-by-side view is the one a tester opens, so it is what the
+            # bare address gives them. /split stays as an alias for links and
+            # bookmarks already pointing at it.
             return self._send(200, (HERE / "split.html").read_text())
+        if route == "/iframe":
+            # The page under test with no chat beside it — what / used to be,
+            # and what the split view embeds on its right.
+            return self._send(200, (HERE / "host.html").read_text())
         if route == "/_bridge.js":
             return self._send(200, (HERE / "bridge.js").read_text(),
                               "application/javascript; charset=utf-8")

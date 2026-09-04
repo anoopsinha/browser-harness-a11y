@@ -47,7 +47,8 @@
        aria-valuemin="20" aria-valuemax="70" aria-valuenow="33"></div>
 
   <div class="panel">
-    <iframe id="page" title="Page under test" src="/"></iframe>
+    <!-- /iframe, not /: since / is this page, it would frame itself. -->
+    <iframe id="page" title="Page under test" src="/iframe"></iframe>
   </div>
 
 <script>

@@ -312,17 +312,17 @@ for t in list_tabs(include_chrome=False):
     u = t.get("url") or ""
     if "$IFRAME_PORT" not in u:
         continue
-    if "/split" in u and keep is None:
+    if (u.rstrip("/").endswith("$IFRAME_PORT") or "/split" in u) and keep is None:
         keep = t["targetId"]
     else:
         cdp("Target.closeTarget", targetId=t["targetId"])
 if keep is None:
-    keep = new_tab("http://127.0.0.1:$IFRAME_PORT/split")
+    keep = new_tab("http://127.0.0.1:$IFRAME_PORT/")
     time.sleep(4)
 print(keep)
 PY
 )"
-    if [ -n "$driven" ]; then ok "side-by-side view open on :$IFRAME_PORT/split"
+    if [ -n "$driven" ]; then ok "side-by-side view open on :$IFRAME_PORT"
     else bad "could not open the Framed page"; fi
 
     # A chat left open here from an earlier run would connect to the same
