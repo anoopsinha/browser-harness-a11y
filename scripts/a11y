@@ -303,16 +303,26 @@ up() {
     # before anyone connects from elsewhere.
     driven="$(cd "$A11Y" && bounded 40 ./browser-harness <<PY 2>/dev/null | tail -1
 import time
+# Match the side-by-side view specifically, and clear any other viewer on this
+# port. Matching the port alone reused a plain viewer left from an earlier run,
+# so the split view was never opened; and every extra viewer renders the same
+# page again for nobody.
+keep = None
 for t in list_tabs(include_chrome=False):
-    if "$IFRAME_PORT" in (t.get("url") or ""):
-        print(t["targetId"]); break
-else:
-    tid = new_tab("http://127.0.0.1:$IFRAME_PORT/")
-    time.sleep(3)
-    print(tid)
+    u = t.get("url") or ""
+    if "$IFRAME_PORT" not in u:
+        continue
+    if "/split" in u and keep is None:
+        keep = t["targetId"]
+    else:
+        cdp("Target.closeTarget", targetId=t["targetId"])
+if keep is None:
+    keep = new_tab("http://127.0.0.1:$IFRAME_PORT/split")
+    time.sleep(4)
+print(keep)
 PY
 )"
-    if [ -n "$driven" ]; then ok "Framed page open and waiting on :$IFRAME_PORT"
+    if [ -n "$driven" ]; then ok "side-by-side view open on :$IFRAME_PORT/split"
     else bad "could not open the Framed page"; fi
 
     # A chat left open here from an earlier run would connect to the same

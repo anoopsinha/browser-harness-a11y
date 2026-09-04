@@ -388,9 +388,17 @@ class Receiver:
             raise RuntimeError("no viewer open on this machine — open the "
                                f"Framed page ({IFRAME_HOST}/) in a tab here")
         wrapped = "(function(){%s})()" % expression
+        # The page sits one frame down on the plain viewer and two on the
+        # side-by-side one, where it is nested inside the right-hand panel.
+        # Both are same-origin with each other, so the walk is just property
+        # access rather than anything the frames have to cooperate on.
         return js("""(() => {
-            const f = document.getElementById('frame');
-            if (!f || !f.contentWindow) throw new Error('the Framed page has no frame');
+            const direct = document.getElementById('frame');
+            const panel = document.getElementById('page');
+            const f = direct
+              || (panel && panel.contentDocument
+                  && panel.contentDocument.getElementById('frame'));
+            if (!f || !f.contentWindow) throw new Error('no page frame in this viewer');
             return f.contentWindow.eval(%s);
         })()""" % json.dumps(wrapped), target_id=tid)
 

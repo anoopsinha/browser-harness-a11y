@@ -50,6 +50,10 @@
   // The chat is served by the toolkit on another port, so its address is a
   // parameter rather than a constant: through a tunnel it may not be the same
   // host this page came from.
+  // Named like the plain viewer, so the receiver can read the page through
+  // this one as well — it holds the same frame, one level further down.
+  window.__BH_IFRAME_VIEWER = true;
+
   const params = new URLSearchParams(location.search);
   const chatUrl = params.get('chat') || 'http://localhost:4000/chat';
   document.getElementById('chat').src = chatUrl;
