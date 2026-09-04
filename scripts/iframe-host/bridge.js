@@ -106,6 +106,61 @@
     }
   });
 
+  // Search results are wrapped in a tracking redirector, and a redirector
+  // cannot be followed on our side: Bing's computes the destination in script
+  // and calls location.replace, which no code in the page can intercept. What
+  // it can do is read the destination out of the link before it is followed —
+  // it is sitting in the URL's own parameter.
+  function unwrapRedirect(href) {
+    let u;
+    try { u = new URL(href); } catch (e) { return href; }
+    for (const key of ['u', 'url', 'redirect', 'target', 'dest', 'q']) {
+      const v = u.searchParams.get(key);
+      if (!v) continue;
+      if (/^https?:\/\//i.test(v)) return v;             // plain, as Google uses
+      // Bing prefixes a base64url payload with two characters.
+      const payload = /^[a-z0-9]{2}[A-Za-z0-9_-]{8,}$/.test(v) ? v.slice(2) : v;
+      try {
+        const text = atob(payload.replace(/-/g, '+').replace(/_/g, '/')
+                                 .padEnd(payload.length + (4 - payload.length % 4) % 4, '='));
+        if (/^https?:\/\//i.test(text)) return text;
+        if (/^\//.test(text)) return new URL(text, u.origin).href;  // often a path
+      } catch (e) { /* not base64; the link is what it says it is */ }
+    }
+    return href;
+  }
+
+  // Every link navigation goes through the host, whatever the page intended.
+  //
+  // Sites open results in new tabs — Bing marks 29 of 48 links target="_blank" —
+  // and a new tab escapes the frame entirely: no proxy, no adapters, and nothing
+  // at all happens on the screen of the person this is being driven for. A
+  // plain same-frame link is wrong here too, for the second reason: it moves
+  // this viewer only, straight to the site, around the proxy.
+  addEventListener('click', (e) => {
+    if (e.defaultPrevented) return;
+    const a = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    const href = a.href || '';
+    if (!/^https?:/i.test(href)) return;          // mailto:, tel:, javascript:
+    // A fragment on this same page is movement within the document, not a
+    // navigation — routing it would reload the page and lose their place.
+    const here = location.href.split('#')[0];
+    if (href.split('#')[0] === here && href.includes('#')) return;
+    e.preventDefault();
+    parent.postMessage({ kind: 'bh-iframe-navigate', url: unwrapRedirect(href) }, '*');
+  }, true);
+
+  // Some pages skip the anchor and call this directly.
+  const openedBy = window.open;
+  window.open = function (url) {
+    if (url && /^https?:/i.test(String(url))) {
+      parent.postMessage({ kind: 'bh-iframe-navigate', url: String(url) }, '*');
+      return null;
+    }
+    return openedBy.apply(window, arguments);
+  };
+
   window.__BH_BRIDGE = true;
   // Announced, not polled: the host cannot know when a cross-document load has
   // finished running our scripts, and guessing produces a race on every page.
