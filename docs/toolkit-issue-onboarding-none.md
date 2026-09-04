@@ -62,6 +62,34 @@ the needs straight back.
 `deriveDefaultNeeds` itself is already correct: it loops over `areas`, so an
 empty list yields no needs, and free text alone adds none.
 
+## The wider shape it belongs to
+
+The form only ever adds. It is titled "Add a profile", it opens empty, and it
+never shows what the profile currently says — so the only way to change one
+answer is to retype all of them, and an empty box means "no opinion" rather than
+"nothing". That is why "none" has nowhere to live: a form that cannot show the
+current answer cannot express changing it to none either.
+
+So the same change should make it an editor:
+
+- **Rename the section to "Profile."** It already updates as well as creates —
+  both buttons say "Update profile" — and the heading is the last thing still
+  calling it an add.
+- **Fill it from the current profile.** `freeText` into the "What do you need"
+  box, `supportAreas` into the checkboxes, the vision kind into its radio, and
+  the uid into the id field so submitting updates that profile rather than
+  minting another. `loadCurrent()` already fetches exactly this and only uses it
+  for the banner.
+- **`/api/profile` needs to return `visionKind`.** `profileConfig()` returns
+  `supportAreas` and `freeText` only, so the blind / low-vision answer — by its
+  own comment "the single most consequential fact about how the page should
+  adapt" — cannot be shown back to the person who gave it, and silently resets
+  on the next update.
+- **Then add "None of these"** to the areas group, exclusive with the rest:
+  choosing it clears the others, choosing any other clears it. With the fields
+  filled, unchecking everything is now genuinely ambiguous — it could be a
+  half-finished edit — so none has to be a positive answer, not an absence.
+
 ## Suggested fix
 
 - **A "None of these" option** in the areas group, which clears the other
@@ -80,6 +108,11 @@ persona — but it should be a decision rather than a side effect.
 
 ## Acceptance
 
-Onboard `demo-user` with none selected, then read the profile back:
-`supportAreas: []`, `needs: []`, `freeText: ""` — and the next sync asserts
-nothing.
+Open onboarding against an existing profile: the heading reads "Profile", the
+need box carries its free text, its areas are checked, and its vision kind is
+selected. Choose "None of these" — the other boxes clear. Submit, and read the
+profile back: `supportAreas: []`, `needs: []`, `freeText: ""`, with the next
+sync asserting nothing.
+
+Then re-check an area and submit again: the profile comes back, which is what
+tells you none cleared rather than broke it.
