@@ -71,13 +71,27 @@
     try { document.getElementById('chat').focus(); } catch (e) {}
   });
 
-  // Ctrl-Space belongs to the chat, but a press landing out here never reaches
-  // it. Hand focus over so the next one does. The keystroke itself cannot be
-  // forwarded — a cross-origin frame will not accept a synthetic event — so the
-  // press that arrives while the page panel has focus is spent moving focus.
+  // Ctrl-Space belongs to the chat, and a press landing out here never reaches
+  // it — a cross-origin frame will not accept a synthetic keystroke. So ask the
+  // chat to do it instead. A keydown inside the frame does not bubble out here,
+  // so this only ever fires for presses the chat did not already get.
   addEventListener('keydown', (e) => {
     if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
     if (e.code !== 'Space' && e.key !== ' ') return;
+    e.preventDefault();
+    try {
+      document.getElementById('chat').contentWindow
+        .postMessage({ kind: 'aa-chat-command', name: 'voice' }, '*');
+    } catch (err) { document.getElementById('chat').focus(); }
+  });
+
+  // If it could not run it — voice switched off, or a browser without speech —
+  // put the person where they can act on it themselves rather than leaving the
+  // key silently dead.
+  addEventListener('message', (ev) => {
+    const m = ev.data;
+    if (!m || m.kind !== 'aa-chat-command-result' || m.ok) return;
+    status.textContent = m.detail || 'the chat could not do that';
     try { document.getElementById('chat').focus(); } catch (err) {}
   });
 

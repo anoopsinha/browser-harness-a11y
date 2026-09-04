@@ -82,11 +82,14 @@ cross-origin frame gets no microphone at all, so dictation and speech
 recognition never start — and nothing says why, which is the worst way for a
 voice feature to fail.
 
-It also takes focus when the page loads, and Ctrl-Space out in the page panel
-hands focus back to it. The chat binds its shortcuts on its own document, so
-they only reach it when focus is inside that frame; the keystroke itself cannot
-be forwarded, since a cross-origin frame will not accept a synthetic event, so
-that press is spent moving focus and the next one works.
+It also takes focus when the page loads. The chat binds its shortcuts on its own
+document, so a Ctrl-Space landing out in the page panel never reaches it — and
+the keystroke cannot be forwarded, since a cross-origin frame will not accept a
+synthetic event. So the press is sent as a command instead
+(`{ kind: 'aa-chat-command', name: 'voice' }`), which the chat answers with a
+result. Voice toggles from wherever the person is, and focus does not move. If
+the chat says it could not run it — voice switched off, no speech support — the
+reason is shown and focus goes to the chat so they can act on it.
 
 The divider is a real `separator`: focusable, with arrow keys to move it, Home
 and End for the limits, and Shift for larger steps — someone working by keyboard
