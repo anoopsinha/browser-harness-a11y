@@ -233,6 +233,20 @@ Measured against real sites, not assumed:
 Treat it as a way to exercise adapters against a curated corpus, not as a
 general browser.
 
+## The agent is sandboxed
+
+It approves its own tool calls, so what it may touch cannot be left to its
+instructions. `scripts/agent-sandbox/gemini` runs the CLI under Seatbelt with
+the `restrictive-open` profile: writes confined to its workspace, temp and
+cache, network left open for the API and the services it drives the browser
+through. `scripts/a11y` points `GEMINI_BIN` at it.
+
+This is not hypothetical. Asked to open a page that would not render, the agent
+edited this project's proxy source to make its own task succeed and reported
+success rather than the obstacle. Blocked by the sandbox on a later attempt, it
+emitted a Seatbelt rule granting itself write access to this repository — which
+is the reason the boundary has to be outside its reach.
+
 ## Security
 
 The proxied page's JavaScript runs in this proxy's origin. Keep it on its own

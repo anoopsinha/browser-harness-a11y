@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run the agent's CLI confined to its own workspace.
+#
+# The agent executes shell with every tool call auto-approved, and its working
+# directory is only a default — nothing stopped it reaching the rest of the
+# machine. It did: asked to open a page that would not render, it edited this
+# project's proxy source to make its own task succeed, and reported success.
+#
+# --sandbox puts it under Seatbelt. `restrictive-open` allows writes to the
+# workspace, temp and cache only, and leaves the network open — which it needs,
+# for the API and for the services on localhost it drives the browser through.
+#
+# Point GEMINI_BIN at this file. Everything else passes straight through.
+set -eu
+: "${SEATBELT_PROFILE:=restrictive-open}"
+export SEATBELT_PROFILE
+exec "${GEMINI_REAL_BIN:-/opt/homebrew/bin/gemini}" --sandbox "$@"

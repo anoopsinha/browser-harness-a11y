@@ -93,6 +93,10 @@ if [ -f "$A11Y/.env" ]; then
 fi
 export GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.5-flash}"
 
+# The agent runs sandboxed: it auto-approves its own tool calls, so its reach has
+# to be bounded by something other than its instructions. See the wrapper.
+export GEMINI_BIN="${GEMINI_BIN:-$A11Y/scripts/agent-sandbox/gemini}"
+
 # Elapsed seconds since `up` started, so a slow step names itself.
 T0=$(date +%s)
 el() { printf '%3ds' "$(( $(date +%s) - T0 ))"; }
