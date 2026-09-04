@@ -16,12 +16,22 @@
            padding: .2rem .4rem; border-bottom: 1px solid #8884; }
   label { font-size: .78rem; opacity: .7; }
   input { flex: 1; min-width: 0; padding: .15rem .35rem; font: inherit; }
+  /* Small, and the same height as the field they sit beside. */
+  .navbtn { flex: 0 0 auto; width: 1.6rem; height: 1.5rem; padding: 0; font: inherit;
+            line-height: 1; cursor: pointer; border: 1px solid #8886; border-radius: 3px;
+            background: transparent; color: inherit; }
+  .navbtn:hover:not(:disabled) { background: #8882; }
+  .navbtn:disabled { opacity: .35; cursor: default; }
+  .navbtn:focus-visible { outline: 2px solid #06c; outline-offset: 1px; }
   #status { font: 11px ui-monospace, monospace; opacity: .6; white-space: nowrap; }
   iframe { flex: 1 1 auto; min-height: 0; width: 100%; border: 0; }
 </style>
 </head>
 <body>
 <header>
+  <button type="button" id="back" class="navbtn" title="Back" aria-label="Back" disabled>‹</button>
+  <button type="button" id="fwd" class="navbtn" title="Forward" aria-label="Forward" disabled>›</button>
+  <button type="button" id="reload" class="navbtn" title="Reload" aria-label="Reload">⟳</button>
   <label for="url">Page</label>
   <input id="url" type="url" value="https://en.wikipedia.org/wiki/Apple">
   <span id="status" role="status" aria-live="polite">loading…</span>
@@ -38,6 +48,7 @@
   // looking for it matches on this rather than on a URL.
   window.__BH_IFRAME_VIEWER = true;
 
+  const $ = (id) => document.getElementById(id);
   const frame = document.getElementById('frame');
   const url = document.getElementById('url');
   const status = document.getElementById('status');
@@ -53,8 +64,18 @@
   }
 
   function show(state) {
+    // Whether there is anywhere to go is the session's business, not this
+    // window's — so the buttons follow the same broadcast as everything else.
+    $('back').disabled = !state.canBack;
+    $('fwd').disabled = !state.canForward;
     if (state.action) toFrame('performAction', state.action.id, state.action.target);
     wanted = state.settings || {};
+    if (state.reload && state.url === loadedUrl) {
+      status.textContent = 'reloading…';
+      ready = false;
+      frame.src = '/go?url=' + encodeURIComponent(state.url) + '&t=' + state.rev;
+      return;
+    }
     if (state.url !== loadedUrl) {
       loadedUrl = state.url;
       url.value = state.url;
@@ -89,6 +110,10 @@
       if (Object.keys(wanted).length) toFrame('applySettings', wanted);
     }
   });
+
+  $('back').addEventListener('click', () => request({ nav: 'back' }));
+  $('fwd').addEventListener('click', () => request({ nav: 'forward' }));
+  $('reload').addEventListener('click', () => request({ nav: 'reload' }));
 
   url.addEventListener('keydown', (e) => { if (e.key === 'Enter') request({ url: e.target.value }); });
 </script>

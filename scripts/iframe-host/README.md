@@ -82,6 +82,11 @@ and End for the limits, and Shift for larger steps — someone working by keyboa
 has as much reason to resize it as someone with a mouse. The position is
 remembered per browser. Below 700px the split becomes horizontal.
 
+Back, forward and reload sit beside the address on the Framed page, and they
+move the *session* rather than a frame. A frame's own history belongs to one
+viewer, and the person reading is on another machine — pressing back on either
+screen has to move both.
+
 ## The current page is server state
 
 Two browsers render the page under test: the operator's, and the one on the

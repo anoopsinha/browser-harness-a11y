@@ -944,7 +944,16 @@ class Receiver:
             self._return_to_controller = (meta or {}).get("returnToController", True)
             return self._task(utterance)
 
-        if IFRAME_HOST and actionId in ("activate", "scroll", "back", "forward"):
+        if IFRAME_HOST and actionId in ("back", "forward"):
+            # The session's history, not this viewer's frame: a frame's own
+            # history moves one screen, and the person reading is on another.
+            try:
+                r = self._iframe_post({"nav": actionId})
+            except Exception as e:
+                return {"ok": False, "detail": f"could not reach the iframe host — {e}"}
+            return {"ok": True, "detail": f"went {actionId}"}
+
+        if IFRAME_HOST and actionId in ("activate", "scroll"):
             try:
                 self._iframe_post({"action": {"id": actionId, "target": target}})
             except Exception as e:

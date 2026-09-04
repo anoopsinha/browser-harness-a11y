@@ -46,12 +46,46 @@ BUNDLE = HERE.parent.parent / "src" / "browser_harness" / "a11y" / "bundle.js"
 # server — and pushing changes — is what makes "open this page" mean the same
 # thing to both of them.
 STATE = {"url": "https://en.wikipedia.org/wiki/Apple", "settings": {}, "rev": 0}
+
+# Where the session has been. Held here, not in any viewer, for the same reason
+# the current page is: back has to mean the same thing on the operator's screen
+# and on the tester's, and a frame's own history is per-viewer.
+HISTORY = [STATE["url"]]
+POS = 0
 STATE_LOCK = threading.Lock()
 LISTENERS = []          # open text/event-stream responses
 LISTENERS_LOCK = threading.Lock()
 
 
-def update(url=None, settings=None, action=None):
+def snapshot():
+    """The state as a viewer needs it, including whether history has anywhere
+    to go. Computed here rather than only when something changes — a viewer
+    that has just opened gets its first state from /state or the greeting, and
+    without these its buttons start disabled and stay that way."""
+    return {**STATE, "canBack": POS > 0, "canForward": POS < len(HISTORY) - 1}
+
+
+def _remember(url):
+    """Record a visit, dropping anything forward of here — as a browser does."""
+    global POS
+    if HISTORY and HISTORY[POS] == url:
+        return
+    del HISTORY[POS + 1:]
+    HISTORY.append(url)
+    POS = len(HISTORY) - 1
+
+
+def step(direction):
+    """Move through the session's history. Returns the URL, or None at the end."""
+    global POS
+    nxt = POS + (1 if direction == "forward" else -1)
+    if not (0 <= nxt < len(HISTORY)):
+        return None
+    POS = nxt
+    return HISTORY[POS]
+
+
+def update(url=None, settings=None, action=None, remember=True, reload=False):
     """Change the session and tell every viewer.
 
     Settings travel the same way the URL does, and for the same reason: the
@@ -61,16 +95,20 @@ def update(url=None, settings=None, action=None):
     with STATE_LOCK:
         if url:
             STATE["url"] = url
+            if remember:
+                _remember(url)
             # Settings survive a navigation. Someone who asked for bigger text
             # wants it on the next page too — which is what the sticky adapters
             # do on a tab, and the session should not quietly differ.
         if settings:
             STATE["settings"] = {**STATE["settings"], **settings}
         STATE["rev"] += 1
-        payload = dict(STATE)
+        payload = snapshot()
     if action:
         # Not part of the state — a thing to do once, not a fact to hold.
         payload = {**payload, "action": action}
+    if reload:
+        payload = {**payload, "reload": True}
     line = ("data: " + json.dumps(payload) + "\n\n").encode()
     with LISTENERS_LOCK:
         for w in list(LISTENERS):
@@ -167,7 +205,7 @@ class Handler(BaseHTTPRequestHandler):
                               "application/javascript; charset=utf-8")
         if route == "/state":
             with STATE_LOCK:
-                return self._send(200, json.dumps(STATE), "application/json")
+                return self._send(200, json.dumps(snapshot()), "application/json")
         if route == "/events":
             return self.events()
         if route == "/go":
@@ -191,8 +229,29 @@ class Handler(BaseHTTPRequestHandler):
         url = (body.get("url") or "").strip()
         settings = body.get("settings")
         action = body.get("action")
+        nav = body.get("nav")
         if url and not url.startswith(("http://", "https://")):
             url = "https://" + url
+
+        if nav in ("back", "forward"):
+            moved = step(nav)
+            if moved is None:
+                with STATE_LOCK:
+                    at_end = snapshot()
+                return self._send(200, json.dumps(at_end), "application/json")
+            # remember=False: walking history is not a new visit, or going back
+            # would truncate the forward entries it just moved off.
+            return self._send(200, json.dumps(update(moved, remember=False)),
+                              "application/json")
+
+        if nav == "reload":
+            # Same URL, so a viewer comparing against what it has loaded would
+            # do nothing. The flag is what tells it to load anyway.
+            with STATE_LOCK:
+                current = STATE["url"]
+            return self._send(200, json.dumps(update(current, remember=False, reload=True)),
+                              "application/json")
+
         if not (url or settings or action):
             return self._send(400, json.dumps({"error": "nothing to change"}),
                               "application/json")
@@ -207,7 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
         with STATE_LOCK:
-            first = ("data: " + json.dumps(STATE) + "\n\n").encode()
+            first = ("data: " + json.dumps(snapshot()) + "\n\n").encode()
         try:
             self.wfile.write(first)
             self.wfile.flush()
