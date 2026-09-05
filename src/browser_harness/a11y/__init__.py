@@ -17,8 +17,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ..helpers import (activate_tab, cdp, current_tab, js, list_tabs,
-                       new_tab, page_info, switch_tab)
+from ..helpers import (activate_tab, cdp, current_tab, goto_url, js,
+                       list_tabs, new_tab, page_info, switch_tab)
 from ..paths import runtime_dir
 
 BUNDLE = Path(__file__).with_name("bundle.js")
@@ -261,7 +261,14 @@ def _settings_tab():
                 if (t.get("url") or "").startswith("chrome://settings")), None)
     opened = False
     if not tid:
-        tid = new_tab("chrome://settings/accessibility")
+        # Not new_tab(): it reuses the attached tab when that tab is blank, and
+        # at startup the driven tab IS blank — so the settings page landed in
+        # it, and the tab the session was pinned to became chrome://settings.
+        # Creating the target outright keeps this off any tab but its own.
+        tid = cdp("Target.createTarget", url="about:blank",
+                  background=True)["targetId"]
+        switch_tab(tid)
+        goto_url("chrome://settings/accessibility")
         opened = True
     try:
         yield tid

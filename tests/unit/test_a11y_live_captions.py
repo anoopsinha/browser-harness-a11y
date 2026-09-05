@@ -119,38 +119,46 @@ def test_the_tab_it_opened_is_closed_and_the_session_comes_home_first(
     """Closing the tab while the daemon is still attached to it disconnects CDP."""
     monkeypatch.setattr(a11y, "list_tabs", lambda include_chrome=True: [])
     monkeypatch.setattr(a11y, "current_tab", lambda: {"targetId": "driven"})
-    monkeypatch.setattr(a11y, "new_tab", lambda url: "scratch")
+    monkeypatch.setattr(a11y, "goto_url", lambda url: None)
     monkeypatch.setattr(a11y, "_driven_target", None)
     order = []
     monkeypatch.setattr(a11y, "switch_tab", lambda t, **k: order.append(("switch", t)))
     monkeypatch.setattr(a11y, "activate_tab", lambda t: order.append(("activate", t)))
-    monkeypatch.setattr(a11y, "cdp",
-                        lambda m, **k: order.append((m, k.get("targetId"))) or {})
+
+    def fake_cdp(method, **kw):
+        if method == "Target.createTarget":
+            return {"targetId": "scratch"}
+        order.append((method, kw.get("targetId")))
+        return {}
+
+    monkeypatch.setattr(a11y, "cdp", fake_cdp)
     scripted(monkeypatch, ["off", "on"])
 
     a11y.a11y_live_captions(True)
 
-    assert order == [("switch", "driven"),
+    assert order == [("switch", "scratch"),          # to drive the new tab
+                     ("switch", "driven"),           # home before closing it
                      ("Target.closeTarget", "scratch"),
                      ("activate", "driven")]
 
 
-def test_a_reused_blank_driven_tab_is_never_closed(prefs_file, monkeypatch):
-    """new_tab reuses the attached tab when it is blank — closing it would take
-    the page the person is on with it."""
+def test_the_settings_page_never_lands_in_the_driven_tab(prefs_file, monkeypatch):
+    """new_tab reuses the attached tab when it is blank, and at startup the
+    driven tab is blank — so the settings page took it over and the session was
+    left pinned to chrome://settings."""
     monkeypatch.setattr(a11y, "list_tabs", lambda include_chrome=True: [])
     monkeypatch.setattr(a11y, "current_tab", lambda: {"targetId": "driven"})
-    monkeypatch.setattr(a11y, "new_tab", lambda url: "driven")  # reused, not new
+    monkeypatch.setattr(a11y, "goto_url", lambda url: None)
     monkeypatch.setattr(a11y, "_driven_target", None)
     monkeypatch.setattr(a11y, "switch_tab", lambda *a, **k: None)
     monkeypatch.setattr(a11y, "activate_tab", lambda *a, **k: None)
-    closed = []
-    monkeypatch.setattr(a11y, "cdp", lambda m, **k: closed.append(m) or {})
+    monkeypatch.setattr(a11y, "new_tab",
+                        lambda *a, **k: pytest.fail("must not reuse a tab it did not make"))
+    monkeypatch.setattr(a11y, "cdp",
+                        lambda m, **kw: {"targetId": "scratch"} if m == "Target.createTarget" else {})
     scripted(monkeypatch, ["off", "on"])
 
     a11y.a11y_live_captions(True)
-
-    assert "Target.closeTarget" not in closed
 
 
 # ---- following a settings change ----------------------------------------
